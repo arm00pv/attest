@@ -137,6 +137,7 @@ exists to argue against.
 ```bash
 python tests/test_conformance.py   # 38 controls
 python tests/smoke_http.py         # end-to-end over real HTTP
+python tests/smoke_mcp.py          # end-to-end against a real MCP client
 ```
 
 The controls are the argument. A few of them:

@@ -137,7 +137,8 @@ exists to argue against.
 ```bash
 python tests/test_conformance.py   # 38 controls
 python tests/smoke_http.py         # end-to-end over real HTTP
-python tests/smoke_mcp.py          # end-to-end against a real MCP client
+python tests/smoke_mcp.py          # end-to-end against a real MCP client, over stdio
+python tests/smoke_mcp_transports.py  # the streamable-http and sse transports
 ```
 
 The controls are the argument. A few of them:
@@ -158,6 +159,18 @@ The controls are the argument. A few of them:
 **A skipped control is never reported as a pass.** On Windows, C004 skips (no
 POSIX signals); on Linux with Lean installed, C013 skips (the absence cannot be
 tested). The two platforms skip different controls and together cover all of them.
+
+### What is measured, and where
+
+| suite | Windows | Linux |
+|---|---|---|
+| 38 conformance controls | 37 pass, 1 skip | 36 pass, 1 skip |
+| HTTP end-to-end | pass | pass |
+| MCP over stdio | pass | pass |
+| MCP over streamable-http and sse | pass | pass |
+
+All three transports are exercised by a real MCP client, not by inspecting a
+schema. Nothing in this section is asserted from having read the code.
 
 ---
 

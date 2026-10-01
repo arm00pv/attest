@@ -190,6 +190,15 @@ class GraphChecker:
 # ---------------------------------------------------------------------- math
 MATHLIB = os.environ.get("ATTEST_MATHLIB", "")
 
+# Lean's way of saying "I do not have that". None of these means the claim is
+# false; they mean the environment cannot evaluate it as written.
+MISSING_DEPENDENCY_SIGNALS = (
+    "unknown tactic", "unknown identifier", "unknown constant",
+    "unknown namespace", "unknown module", "unknown declaration",
+    "unknown package", "failed to resolve", "invalid import",
+    "unknown option", "unknown attribute",
+)
+
 
 def mathlib_dir() -> Optional[str]:
     """Where Mathlib lives, if the user has one.
@@ -268,12 +277,40 @@ def check_math(source: str, timeout: int = 600) -> Verdict:
                         "a failed proof" % sig,
                 seconds=dt, output=out[:400], signal=sig)
         lines = out.split("\n")
+        # A MISSING DEPENDENCY IS NOT A DISPROOF.
+        #
+        # Measured on throne, 2026-10-01: 'theorem t : (1:Nat) + 1 = 2 := by
+        # norm_num' came back DISPUTED, because Mathlib was not configured and
+        # 'norm_num' therefore does not exist in bare Lean. The theorem is TRUE.
+        # The checker ran, rejected it, and the rejection had nothing to do with
+        # the claim.
+        #
+        # This is the exact failure this whole service exists to prevent, found
+        # in this service by running it rather than by reading it. When no
+        # Mathlib is configured, an "unknown tactic/identifier" is an
+        # environment limitation, and the honest verdict is UNKNOWN with a
+        # remedy. When Mathlib IS present, the same error means the proof is
+        # genuinely broken and DISPUTED is correct.
+        if lib is None:
+            dep = [l for l in lines
+                   if any(sig in l.lower() for sig in MISSING_DEPENDENCY_SIGNALS)]
+            if dep:
+                return Verdict.unknown(
+                    "math",
+                    "Lean could not resolve something this claim needs (%s). With "
+                    "no Mathlib configured this is a MISSING DEPENDENCY, not a "
+                    "disproof. Install Mathlib and set ATTEST_MATHLIB to get a "
+                    "real verdict." % dep[0].strip()[:90],
+                    seconds=dt, output="\n".join(dep)[:400],
+                    needs="Mathlib", remedy="set ATTEST_MATHLIB to a Lean project "
+                                            "containing Mathlib")
+        lines_after = lines
         # Lean's own contract: an error fails, a warning does not. Measured in the
         # system this came from: four of five "failures" in a benchmark carried
         # warnings only, and correct proofs were being thrown away.
-        err_lines = [l for l in lines
+        err_lines = [l for l in lines_after
                      if re.search(r"\berror\b", l) and "warning" not in l.lower()]
-        warn_lines = [l for l in lines if "warning" in l.lower()]
+        warn_lines = [l for l in lines_after if "warning" in l.lower()]
         if r.returncode == 0 and not err_lines:
             return Verdict.passed("math", seconds=dt, warnings=len(warn_lines),
                                   output=out[:200])

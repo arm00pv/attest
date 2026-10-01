@@ -307,6 +307,25 @@ def c017_warm_actually_waits():
        "can check:" in second.get("verdict", ""), second.get("verdict"))
 
 
+def c018_missing_dependency_is_not_a_disproof():
+    """Measured on throne 2026-10-01: a TRUE theorem came back DISPUTED because
+    Mathlib was not installed, so 'norm_num' did not exist. The checker ran and
+    the rejection had nothing to do with the claim - the exact failure this
+    service exists to prevent, found in this service by running it."""
+    if not (shutil.which("lean") or shutil.which("lake")):
+        return skip("C018 a missing dependency is UNKNOWN, not DISPUTED",
+                    "no Lean here at all, so the case cannot arise")
+    if checkers.mathlib_dir():
+        return skip("C018 a missing dependency is UNKNOWN, not DISPUTED",
+                    "Mathlib IS configured here, so its absence cannot be tested")
+    v = checkers.check_math("theorem t : (1 : Nat) + 1 = 2 := by norm_num")
+    ok("C018 with no Mathlib, a Mathlib-dependent claim is UNKNOWN",
+       v.outcome == "unknown", "%s / %s" % (v.outcome, v.reason))
+    ok("C018b and it names the missing dependency and a remedy rather than "
+       "saying the theorem is false",
+       "MISSING DEPENDENCY" in v.reason and "remedy" in v.detail, v.detail)
+
+
 CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c002_anti_blindness_timeout_is_unknown,
             c003_a_real_failure_is_disputed,
@@ -323,7 +342,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c014_capabilities_is_measured_not_asserted,
             c015_graph_absence_is_unknown_and_contradiction_is_disputed,
             c016_memcheck_never_claims_health_from_silence,
-            c017_warm_actually_waits]
+            c017_warm_actually_waits,
+            c018_missing_dependency_is_not_a_disproof]
 
 
 def main():

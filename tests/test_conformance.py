@@ -724,6 +724,49 @@ def c044_a_host_without_evidence_is_excluded_not_ranked_last():
        r2["verdict"][:120])
 
 
+def c048_an_instrument_must_not_be_blind_to_its_own_silence():
+    """The coverage check compares consecutive cohorts, so it can only see a gap
+    BETWEEN two runs. A stratum that stops entirely writes no further cohorts, so
+    there is no pair to compare and it reported "complete" forever.
+
+    Demonstrated on a real timeline before fixing it: three hourly cohorts ending at
+    12:00, read at 20:00, came back "complete" while the job had been dead for eight
+    hours. That is the same defect the file exists to catch, one level up."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from fleet_coverage import analyse
+    P = {"hourly": 3600, "quarterly": 900}
+
+    stopped = {"hourly": ["2026-10-02T10:00:00Z", "2026-10-02T11:00:00Z",
+                          "2026-10-02T12:00:00Z"]}
+    rep, probs = analyse(stopped, P, now="2026-10-02T20:00:00Z")
+    hourly = [r for r in rep if r["stratum"] == "hourly"][0]
+    ok("C048 a stratum that stopped eight hours ago is reported STALLED, not "
+       "complete", hourly["verdict"] == "STALLED", hourly)
+    ok("C048b and the problem names how long it has been quiet",
+       probs and "produced nothing for 480.0 min" in probs[0], probs[:1])
+
+    # The guard must not be always-on: the same series, read soon after, is fine.
+    rep2, probs2 = analyse(stopped, P, now="2026-10-02T12:30:00Z")
+    hourly2 = [r for r in rep2 if r["stratum"] == "hourly"][0]
+    ok("C048c the same history read half an hour later is complete, so the check "
+       "is not simply always firing",
+       hourly2["verdict"] == "complete" and not probs2, hourly2["verdict"])
+
+    # One cohort that is old is a stall, not "not enough runs to judge".
+    rep3, _ = analyse({"hourly": ["2026-10-02T08:00:00Z"]}, P,
+                      now="2026-10-02T20:00:00Z")
+    ok("C048d a single cohort, long stale, is a stall rather than an absence of "
+       "evidence", rep3[0]["verdict"] == "STALLED", rep3[0])
+
+    # And the original job - a gap BETWEEN two runs - must still be caught.
+    gappy = {"quarterly": ["2026-10-02T10:00:00Z", "2026-10-02T10:15:00Z",
+                           "2026-10-02T10:45:00Z"]}
+    rep4, probs4 = analyse(gappy, P, now="2026-10-02T10:50:00Z")
+    q = [r for r in rep4 if r["stratum"] == "quarterly"][0]
+    ok("C048e an internal gap is still found after adding the silence check",
+       q["verdict"] == "GAPS" and q["gaps"][0]["missed"] == 1, q)
+
+
 def c047_concurrent_writers_lose_nothing():
     """Measured on the real estate on 2026-10-02, not imagined.
 
@@ -1073,7 +1116,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c044_a_host_without_evidence_is_excluded_not_ranked_last,
             c045_a_perfect_record_does_not_buy_certainty,
             c046_many_assertions_checked_twice_is_one_moment_in_time,
-            c047_concurrent_writers_lose_nothing]
+            c047_concurrent_writers_lose_nothing,
+            c048_an_instrument_must_not_be_blind_to_its_own_silence]
 
 
 def main():

@@ -10,21 +10,35 @@ decisions at all - because a lock was held, because a data source was empty,
 because a guard returned early. Every liveness signal says it is healthy.
 
 The ledger is the only durable record of runs that actually produced results. Each
-run writes one cohort, so the spacing between cohorts is the run history, and a
-missing cycle is a visible gap rather than an absence nobody can see.
+run writes one cohort, so the spacing between cohorts is the run history.
 
 Found on its first real run, 2026-10-02: a 29.9-minute gap in the 15-minute panel
 where the 15:00 run had died with "database is locked". The beat file had been
 refreshed by a later run and job_liveness saw nothing wrong.
+
+AND THE HOLE IN THE FIRST VERSION OF THIS FILE
+----------------------------------------------
+It compared consecutive cohorts and so could only see a gap BETWEEN two runs. A
+stratum that stopped entirely writes no further cohorts, so there is no pair to
+compare and it reported "complete" forever - the instrument blind to its own
+silence, which is the exact defect this whole file exists to catch. Demonstrated
+before fixing it: three hourly cohorts ending at 12:00, read at 20:00, came back
+"complete" while the job had been dead for eight hours.
+
+The last cohort is now compared against NOW as well as against its predecessor.
 """
+
+from __future__ import annotations
+
 import argparse
+import json
 import os
 import re
 import sys
 
-sys.path.insert(0, "/home/zixen15/attest-mcp2")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from attest import Store                                                    # noqa: E402
-from attest.decisions import _iso_to_epoch                                  # noqa: E402
+from attest.decisions import _iso_to_epoch, now_iso                         # noqa: E402
 
 DB = os.environ.get("ATTEST_DB") or "/home/zixen15/.attest-ledger/attest.db"
 ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -33,9 +47,9 @@ ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 # listed here has no claimed cadence and cannot be said to have missed one.
 PERIODS = {"panel15m": 900, "panel1h": 3600, "sweep1d": 86400, "hosttrust": 21600}
 
-# How much slack before a gap counts. Timers drift and a run can be a little late;
-# 1.6 periods means a gap of two whole cycles is always reported and a few seconds
-# of jitter never is.
+# How much slack before a gap or a silence counts. Timers drift and a run can be a
+# little late; 1.6 periods means two whole missed cycles are always reported and a
+# few seconds of jitter never is.
 SLACK = 1.6
 
 
@@ -44,52 +58,94 @@ def stamp(cohort):
     return tail if ISO.match(tail) else None
 
 
+def analyse(series, periods=None, now=None, slack=SLACK):
+    """Pure. series is {stratum: [iso timestamps]}; returns the report and problems.
+
+    Kept free of the database and with an injectable clock so it can be controlled:
+    a check that can only be exercised by waiting for a real job to die is not a
+    check anybody will ever run.
+    """
+    periods = PERIODS if periods is None else periods
+    now = now or now_iso()
+    now_e = _iso_to_epoch(now)
+    report, problems = [], []
+
+    for stratum in sorted(periods):
+        period = periods[stratum]
+        ts = sorted(t for t in (stamp(c) for c in (series.get(stratum) or [])) if t)
+        entry = {"stratum": stratum, "cohorts": len(ts),
+                 "period_minutes": period // 60, "gaps": []}
+        age = None
+        if ts:
+            entry["first"], entry["last"] = ts[0], ts[-1]
+            age = now_e - _iso_to_epoch(ts[-1])
+            entry["age_minutes"] = round(age / 60.0, 1)
+
+        # THE SILENCE CHECK. A stratum whose most recent cohort is older than its
+        # own period has stopped, and no comparison between cohorts can reveal it.
+        if age is not None and age > period * slack:
+            entry["verdict"] = "STALLED"
+            problems.append("%s has produced nothing for %.1f min against a "
+                            "%d-minute period - the job has stopped, and this "
+                            "cannot be seen by comparing runs to each other"
+                            % (stratum, age / 60.0, period // 60))
+            report.append(entry)
+            continue
+
+        for a, b in zip(ts, ts[1:]):
+            d = _iso_to_epoch(b) - _iso_to_epoch(a)
+            if d > period * slack:
+                entry["gaps"].append({"from": a, "to": b,
+                                      "minutes": round(d / 60.0, 1),
+                                      "missed": int(round(d / period)) - 1})
+        for g in entry["gaps"]:
+            problems.append("%s missed %d run(s): %s -> %s (%.1f min against a "
+                            "%d-minute period)"
+                            % (stratum, g["missed"], g["from"], g["to"],
+                               g["minutes"], period // 60))
+
+        if entry["gaps"]:
+            entry["verdict"] = "GAPS"
+        elif len(ts) < 2:
+            entry["verdict"] = "NOT ENOUGH RUNS TO JUDGE YET"
+        else:
+            entry["verdict"] = "complete"
+        report.append(entry)
+
+    return report, problems
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=DB)
+    ap.add_argument("--now", default=None, help="override the clock (testing)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     s = Store(args.db)
-    report, problems, measured = [], [], 0
-
-    for stratum, period in sorted(PERIODS.items()):
+    series = {}
+    for stratum in PERIODS:
+        # DISTINCT matters: without it this counts DECISIONS, not runs, and a
+        # stratum with 1634 decisions in 40 cohorts reports 1634 runs. The first
+        # rewrite of this file dropped it and did exactly that.
         rows = s.db.execute("select distinct cohort from decisions where stratum=?",
                             (stratum,)).fetchall()
-        ts = sorted(t for t in (stamp(r["cohort"]) for r in rows) if t)
-        if len(ts) < 2:
-            report.append({"stratum": stratum, "cohorts": len(ts),
-                           "verdict": "NOT ENOUGH RUNS TO JUDGE YET",
-                           "gaps": []})
-            continue
-        measured += 1
-        gaps = []
-        for a, b in zip(ts, ts[1:]):
-            d = _iso_to_epoch(b) - _iso_to_epoch(a)
-            if d > period * SLACK:
-                gaps.append({"from": a, "to": b,
-                             "minutes": round(d / 60.0, 1),
-                             "period_minutes": period // 60,
-                             "missed": int(round(d / period)) - 1})
-        report.append({"stratum": stratum, "cohorts": len(ts), "first": ts[0],
-                       "last": ts[-1], "period_minutes": period // 60,
-                       "gaps": gaps,
-                       "verdict": ("GAPS" if gaps else "complete")})
-        for g in gaps:
-            problems.append("%s missed %d run(s): %s -> %s (%.1f min against a "
-                            "%d-minute period)"
-                            % (stratum, g["missed"], g["from"], g["to"],
-                               g["minutes"], g["period_minutes"]))
+        series[stratum] = [r["cohort"] for r in rows]
+
+    report, problems = analyse(series, now=args.now)
+    measured = sum(1 for r in report
+                   if r["verdict"] in ("complete", "GAPS", "STALLED"))
 
     if args.json:
-        import json
         print(json.dumps({"ok": True, "strata": report, "problems": problems},
                          indent=2, sort_keys=True))
     else:
         for r in report:
             line = "%-11s %3d cohort(s)" % (r["stratum"], r["cohorts"])
             if r.get("period_minutes"):
-                line += "  period %2dm" % r["period_minutes"]
+                line += "  period %3dm" % r["period_minutes"]
+            if r.get("age_minutes") is not None:
+                line += "  last %6.1fm ago" % r["age_minutes"]
             line += "  -> %s" % r["verdict"]
             print(line)
             for g in r.get("gaps", []):
@@ -101,14 +157,13 @@ def main():
             for p in problems:
                 print("  " + p)
         else:
-            print("every stratum with a claimed cadence has an unbroken record")
+            print("every stratum with a claimed cadence has produced results on "
+                  "schedule, and none has gone quiet")
 
     if problems:
         return 1
     if measured == 0:
-        # Nothing had enough history to judge. That is not a pass.
-        print("NOT MEASURED: no stratum has two runs yet, so no cadence could be "
-              "checked")
+        print("NOT MEASURED: no stratum could be judged, which is not a pass")
         return 2
     return 0
 

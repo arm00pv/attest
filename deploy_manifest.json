@@ -7,12 +7,12 @@
  "attest/http_api.py": "ccd6deb865fbf370e56b7592ed19eb47",
  "attest/mcp_api.py": "7e8dbe4243156cf34ffb2adc766d9864",
  "attest/service.py": "82c528aabef26c0e2cac64a034a017e4",
- "attest/store.py": "8a5c2a25b3bfd961751bd4755474db18",
+ "attest/store.py": "915d92e11327dbd0cd89c3480c285999",
  "attest/trust.py": "efd951655411d23ea88085664717785e",
  "attest/verdict.py": "45bee03d50bde4570a8d6ab12aad49b4",
  "examples/panel_forecast.py": "06672614afefd96606a07df11411ea11",
  "tests/run_all.py": "fff5c8181879ae8ebcac8fb33a4ae679",
- "tests/test_conformance.py": "a4ebeba36965ecc210f7311cc4ccd080",
+ "tests/test_conformance.py": "0186dda709ce236a8be083751fa44357",
  "tools/deploy_check.py": "65674634b8f113d8e5eaa2f52940b4f3",
- "tools/fleet_coverage.py": "ad9508b8f5e4c328df22ab332a068510"
+ "tools/fleet_coverage.py": "7fdf2755a08bfedf068201ce821b3250"
 }

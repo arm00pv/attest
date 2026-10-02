@@ -295,6 +295,24 @@ def head_to_head(ledger, models: Sequence[str], stratum: Optional[str] = None,
         # number that happens to look right on a balanced population.
         called = sum(1 for p, y in pairs if (1 if p >= 0.5 else 0) == y)
         base = dis.get("base_rate")
+
+        # PER-COHORT, BECAUSE A COHORT IS ALSO A UNIT OF METHOD. The pooled Brier can
+        # be dominated by one batch while every other batch agreed. This happened
+        # for real: one cohort was recorded under a prompt that had been broken, and
+        # the pooled figure made the forecaster look far worse than it was on every
+        # other cohort. A pooled number that hides a regime change is not a result.
+        per_cohort = {}
+        for c, ps in ledger.pairs_by_cohort(model=m, stratum=stratum).items():
+            b_c = brier(ps)
+            if b_c is not None:
+                per_cohort[c] = round(b_c, 4)
+        spread = None
+        if len(per_cohort) > 1:
+            lo, hi = min(per_cohort.values()), max(per_cohort.values())
+            if hi > lo * 2 and hi - lo > 0.05:
+                spread = ("per-cohort Brier ranges %.4f to %.4f across %d cohorts - the "
+                          "pooled figure hides a change in method between them. Read "
+                          "the cohorts, not the mean." % (lo, hi, len(per_cohort)))
         ref = None if base is None else sum(
             (float(base) - y) ** 2 for _p, y in pairs) / len(pairs) if pairs else None
         rows.append({
@@ -302,6 +320,7 @@ def head_to_head(ledger, models: Sequence[str], stratum: Optional[str] = None,
             "resolved": cal["resolved"], "unresolved": cal["unresolved"],
             "cohorts": cal.get("cohorts"),
             "independence_warning": cal.get("independence_warning"),
+            "brier_by_cohort": per_cohort, "cohort_spread_warning": spread,
             "hit_rate": (None if not pairs else round(called / len(pairs), 4)),
             "base_rate": base,
             "brier": (None if b is None else round(b, 4)),
@@ -332,5 +351,7 @@ def head_to_head(ledger, models: Sequence[str], stratum: Optional[str] = None,
         if best.get("cohorts"):
             verdict += (" Read %d as at most %d independent observation(s), not %d."
                         % (best["resolved"], best["cohorts"], best["resolved"]))
+        if best.get("cohort_spread_warning"):
+            verdict += (" AND: %s" % best["cohort_spread_warning"])
     return {"ok": True, "stratum": stratum or "(all)", "min_n": min_n,
             "forecasters": rows, "verdict": verdict}

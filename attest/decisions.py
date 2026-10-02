@@ -471,6 +471,31 @@ class DecisionLedger:
             "SELECT probability, correct FROM decisions WHERE " + where,
             tuple(args)).fetchall()]
 
+    def pairs_by_cohort(self, model: Optional[str] = None,
+                        stratum: Optional[str] = None) -> Dict[str, List[Tuple[float, int]]]:
+        """The same pairs, kept apart by the batch that produced them.
+
+        A cohort is not only a unit of correlation. It is also a unit of METHOD:
+        if the prompt, the resolver or the thresholds changed, the change lands on
+        a cohort boundary. Pooling across it averages two different treatments and
+        reports the mean as if it were one result.
+        """
+        where = "correct IS NOT NULL AND probability IS NOT NULL"
+        args: list = []
+        if model:
+            where += " AND model = ?"
+            args.append(model)
+        if stratum:
+            where += " AND stratum = ?"
+            args.append(stratum)
+        out: Dict[str, List[Tuple[float, int]]] = {}
+        for r in self.db.execute(
+                "SELECT cohort, probability, correct FROM decisions WHERE " + where,
+                tuple(args)).fetchall():
+            out.setdefault(r["cohort"] or "(no cohort)", []).append(
+                (float(r["probability"]), int(r["correct"])))
+        return out
+
     # -------------------------------------------------------- discriminability
     def discriminability(self, model: Optional[str] = None,
                          stratum: Optional[str] = None) -> Dict[str, Any]:

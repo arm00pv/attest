@@ -680,6 +680,54 @@ def c035_two_forecasters_are_scored_on_the_same_items():
        [r["probability"] for r in rows if r["model"] == "base-rate"])
 
 
+def c041_a_pooled_score_may_not_hide_a_change_of_method():
+    """Found on the real estate, and it nearly produced a false result.
+
+    One cohort of the model's forecasts was recorded under a prompt I had broken,
+    and it scored a Brier of 0.6429 while every other cohort scored 0.1429. Pooled,
+    the forecaster looked far worse than it was on every batch that used the working
+    prompt. A pooled number that hides a regime change is not a result - a cohort is
+    a unit of METHOD as well as of correlation."""
+    from attest.decisions import now_iso
+    from attest.forecast import (Constant, Item, record_forecasts, resolve_due,
+                                  head_to_head)
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    items = [Item("t%d" % i, "q?", stratum="s") for i in range(40)]
+
+    # Cohort A: everything true, and the forecaster says 0.9. Nearly perfect.
+    record_forecasts(ledger, items, [Constant(0.9, "m")], cohort="A",
+                     due_at=now_iso(60))
+    resolve_due(ledger, lambda dec: ("yes", True), now=now_iso(7200))
+    # Cohort B: everything false, same forecaster. Catastrophic.
+    record_forecasts(ledger, items, [Constant(0.9, "m")], cohort="B",
+                     due_at=now_iso(60))
+    resolve_due(ledger, lambda dec: ("no", False), now=now_iso(7200))
+
+    h = head_to_head(ledger, ["m"], stratum="s")
+    row = h["forecasters"][0]
+    ok("C041 two cohorts scoring 0.01 and 0.81 are reported apart, not averaged "
+       "into one number",
+       row["brier_by_cohort"] == {"A": 0.01, "B": 0.81}, row["brier_by_cohort"])
+    ok("C041b and the headline says the pooled figure hides a change of method",
+       row["cohort_spread_warning"] is not None
+       and "hides a change in method" in h["verdict"], h["verdict"][:220])
+
+    # The negative half: cohorts that AGREE must not raise this.
+    svc2, _ = tmp_service()
+    l2 = svc2.decisions
+    it2 = [Item("u%d" % i, "q?", stratum="s2") for i in range(40)]
+    record_forecasts(l2, it2, [Constant(0.9, "m")], cohort="C", due_at=now_iso(60))
+    resolve_due(l2, lambda dec: ("yes", True), now=now_iso(7200))
+    record_forecasts(l2, it2, [Constant(0.9, "m")], cohort="D", due_at=now_iso(60))
+    resolve_due(l2, lambda dec: ("yes", True), now=now_iso(7200))
+    h2 = head_to_head(l2, ["m"], stratum="s2")
+    ok("C041c while cohorts that agree do NOT trigger it - the guard is not "
+       "simply always on",
+       h2["forecasters"][0]["cohort_spread_warning"] is None,
+       h2["forecasters"][0]["cohort_spread_warning"])
+
+
 def c040_a_headline_may_not_overstate_the_sample_it_rests_on():
     """head_to_head said "Best Brier: persistence at 0.0244 over 40 resolved
     decisions" while calibration() on the same rows reported those 80 decisions
@@ -816,7 +864,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c036_an_open_forecast_is_not_a_correct_one,
             c038_the_recorded_answer_agrees_with_the_probability,
             c039_a_short_gap_is_not_reported_as_a_broken_resolver,
-            c040_a_headline_may_not_overstate_the_sample_it_rests_on]
+            c040_a_headline_may_not_overstate_the_sample_it_rests_on,
+            c041_a_pooled_score_may_not_hide_a_change_of_method]
 
 
 def main():

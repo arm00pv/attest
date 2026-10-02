@@ -1373,6 +1373,40 @@ def c036_an_open_forecast_is_not_a_correct_one():
        dis["can_demonstrate_skill"] is None, dis)
 
 
+def c054_a_refuted_assertion_is_not_fed_to_the_router_as_true():
+    """The fleet store keeps the value an assertion had WHEN CLAIMED and the verdict
+    on it now, in the same row, and does not keep observed_now. Reading the claim
+    alone feeds a refuted assertion to the routing model as TRUE and a recovered one
+    as FALSE. That fault is invisible until something breaks, which is the moment the
+    router matters most.
+
+    Measured on throne 2026-10-02: tools/fleet_trust.py read row["observed"] alone.
+    """
+    from attest.trust import Assertion, current_value
+    ok("C054 a refuted assertion is read as FALSE, not as its stale claim",
+       current_value(True, "refuted") is False, current_value(True, "refuted"))
+    ok("C054b a recovered assertion is read as TRUE, not as its stale claim",
+       current_value(False, "recovered") is True, current_value(False, "recovered"))
+    ok("C054c a stale row keeps its value; ageing is not change",
+       current_value(True, "stale") is True and current_value(False, "stale") is False,
+       "stale True->True and stale False->False")
+    ok("C054d never_held keeps False",
+       current_value(False, "never_held") is False, "")
+    ok("C054e an unmeasurable row has no value, not a false one",
+       current_value(True, "unmeasurable") is None, "")
+    ok("C054f CONTROL a row with no status is taken at face value, not flipped",
+       current_value(True, None) is True and current_value(False, None) is False,
+       "an unknown source does not invent a change")
+    naive = {"observed": True, "status": "refuted"}
+    ok("C054g NEGATIVE the old reading really is wrong on this row",
+       naive["observed"] is not current_value(naive["observed"], naive["status"]),
+       "row observed=True while the verdict says it no longer holds")
+    ok("C054h an aged assertion is not a CURRENT observation",
+       Assertion("h", "k", "port_open", True, status="stale").current is False
+       and Assertion("h", "k", "port_open", True, status="fresh").current is True
+       and Assertion("h", "k", "port_open", None, status="fresh").current is False,
+       "stale->False, fresh->True, unmeasured->False")
+
 CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c002_anti_blindness_timeout_is_unknown,
             c003_a_real_failure_is_disputed,
@@ -1425,7 +1459,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c050_a_run_can_succeed_and_still_cover_less,
             c051_the_real_write_paths_survive_each_other,
             c052_the_cure_has_a_cost_and_it_is_measured,
-            c053_a_slow_forecaster_must_not_hold_the_write_lock]
+            c053_a_slow_forecaster_must_not_hold_the_write_lock,
+            c054_a_refuted_assertion_is_not_fed_to_the_router_as_true]
 
 
 def main():

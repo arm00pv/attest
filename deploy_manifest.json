@@ -8,7 +8,7 @@
  "attest/mcp_api.py": "7e8dbe4243156cf34ffb2adc766d9864",
  "attest/service.py": "82c528aabef26c0e2cac64a034a017e4",
  "attest/store.py": "915d92e11327dbd0cd89c3480c285999",
- "attest/trust.py": "efd951655411d23ea88085664717785e",
+ "attest/trust.py": "40e3691fac5bd8bfefa8747a7cb2aa32",
  "attest/verdict.py": "45bee03d50bde4570a8d6ab12aad49b4",
  "bin/api_guard.sh": "4487f6b2136719b222c757e6d2136132",
  "bin/fleet_apiguard_run.sh": "dd057f1e1a244eaff02820ab1a0644d9",
@@ -23,11 +23,11 @@
  "deploy/fleet_restart_api.sh": "cb90ccfedfca0fb60d89919106f36052",
  "examples/panel_forecast.py": "c3c291b3d4fd7f5d402149f95e84e474",
  "tests/run_all.py": "fff5c8181879ae8ebcac8fb33a4ae679",
- "tests/test_conformance.py": "48dac94541ac3bb2c918273a9118fbed",
+ "tests/test_conformance.py": "de31069d702f6634e1ea499af32e4c70",
  "tools/deploy_check.py": "05e0888372f23f779569cddbe85addba",
  "tools/deploy_to_throne.sh": "03fbd83f42bf2c615128a40bc1f77ae7",
  "tools/fleet_coverage.py": "d8a31dc8fe0d8d9607ecd641bfb1cfe5",
  "tools/fleet_sweep.py": "61d0b7710f9f2632193ce3e08420f6dc",
- "tools/fleet_trust.py": "c2dea142f1f8027547648337eb6c9d5c",
+ "tools/fleet_trust.py": "0502b43b7d64e3f5a3533b5da928b89b",
  "tools/install_service.sh": "5b6eb0ce43d398b04bdb56297d745722"
 }

@@ -27,7 +27,7 @@ from attest import Store, DecisionLedger                                   # noq
 from attest.decisions import now_iso                                       # noqa: E402
 from attest.forecast import record_forecasts, resolve_due                # noqa: E402
 from attest.trust import (AlwaysHolds, Assertion, FlipRate, HostStability,  # noqa: E402
-                         assertions_to_items, host_stability, route)
+                         assertions_to_items, current_value, host_stability, route)
 
 HOME = "/home/zixen15"
 FLEET = HOME + "/selfmodel/fleet_store.json"
@@ -87,11 +87,18 @@ def read_fleet(path):
     out = []
     for host, blob in (fs.get("hosts") or {}).items():
         for r in blob.get("rows", []):
-            observed = r.get("observed")
+            # A row carries the value the assertion had WHEN CLAIMED and the
+            # verdict on it now, but not observed_now. Taking observed alone means
+            # a refuted row is read as True and a recovered one as False - see
+            # attest.trust.current_value, which is where the two are put back
+            # together. status rides along so a consumer can tell an aged row from
+            # a current one.
+            status = r.get("status")
+            observed = current_value(r.get("observed"), status)
             if not isinstance(observed, bool):
                 observed = None           # null on some hosts: NOT measurable
             out.append(Assertion(host, r.get("key", "?"), r.get("kind", "?"),
-                                 observed, r.get("note", "")))
+                                 observed, r.get("note", ""), status=status))
     return out, fs.get("built_at")
 
 
@@ -111,12 +118,19 @@ def main():
     assertions, built_at = read_fleet(args.fleet)
     measured = [a for a in assertions if a.observed is not None]
     unmeasured = [a for a in assertions if a.observed is None]
+    # Ageing is not change, but it is not freshness either. Counted and reported so
+    # that the basis of every forecast below is STATED rather than implied. A row
+    # whose claim is older than the TTL its own author declared is evidence about
+    # then; it is still used, but the run says how much of the evidence is aged, and
+    # the routing decision carries the number with it.
+    aged = [a for a in measured if not a.current]
     if not measured:
         print("the fleet store holds no measurable assertion; settling nothing")
         return 2
 
     observed = {"%s|%s" % (a.host, a.key): bool(a.observed) for a in measured}
     host_of = {"%s|%s" % (a.host, a.key): a.host for a in measured}
+    CURRENT = {"%s|%s" % (a.host, a.key): a.current for a in measured}
     hosts = sorted({a.host for a in measured})
 
     history_probe = load_history(args.history)
@@ -181,16 +195,19 @@ def main():
     if choice["chosen"]:
         chosen = choice["chosen"]
         basis = {k: v for k, v in observed.items() if host_of.get(k) == chosen}
+        basis_aged = [k for k in basis if not CURRENT.get(k, True)]
         p = (choice["ranked"][0]["stable_probability"] or 0.0) ** max(1, len(basis))
         route_written = ledger.record(
             question="will %s get to the next check without changing its mind "
                      "about anything?" % chosen,
             answer="true" if p >= 0.5 else "false", qtype="noul",
             probability=p, confidence=p,
-            state="chosen from %d host(s); basis is %d measured assertion(s)"
-                  % (len(choice["ranked"]), len(basis)),
+            state="chosen from %d host(s); basis is %d measured assertion(s), "
+                  "%d of them aged past their declared ttl"
+                  % (len(choice["ranked"]), len(basis), len(basis_aged)),
             model="router:max-stability", who="fleet-trust",
-            alternatives={"basis": basis, "ranked": choice["ranked"],
+            alternatives={"basis": basis, "basis_aged": sorted(basis_aged),
+                          "ranked": choice["ranked"],
                           "excluded": choice["excluded"]},
             due_at=now_iso(args.minutes * 60), stratum=ROUTE_STRATUM,
             cohort=ROUTE_STRATUM + "-" + now_iso(), target=chosen)
@@ -202,8 +219,10 @@ def main():
     history[STAMP_KEY] = built_at
     save_history(args.history, history)
 
-    print("fleet trust %s: %d assertion(s) measured, %d unmeasurable, %d host(s)"
-          % (now_iso(), len(measured), len(unmeasured), len(hosts)))
+    print("fleet trust %s: %d assertion(s) measured (%d current, %d aged past ttl), "
+          "%d unmeasurable, %d host(s)"
+          % (now_iso(), len(measured), len(measured) - len(aged), len(aged),
+             len(unmeasured), len(hosts)))
     print("settled %d, still open %d, refused %d"
           % (resolved["settled"], len(resolved["still_open"]), len(resolved["refused"])))
     print("recorded %d assertion forecast(s) at +%dm" % (written["recorded"],

@@ -40,7 +40,7 @@ from .decisions import now_iso
 from .forecast import Forecaster, Item, brier_decomposition
 
 __all__ = ["Assertion", "AlwaysHolds", "FlipRate", "HostStability",
-           "assertions_to_items", "host_stability", "route"]
+           "assertions_to_items", "host_stability", "route", "current_value"]
 
 
 class Assertion:
@@ -52,15 +52,31 @@ class Assertion:
     checked out clean are different facts and the difference is the whole point.
     """
 
-    __slots__ = ("host", "key", "kind", "observed", "note")
+    __slots__ = ("host", "key", "kind", "observed", "note", "status")
 
     def __init__(self, host: str, key: str, kind: str, observed: Optional[bool],
-                 note: str = ""):
+                 note: str = "", status: Optional[str] = None):
         self.host = host
         self.key = key
         self.kind = kind
         self.observed = observed
         self.note = note
+        # The self-model's own verdict on the row this came from: fresh, stale,
+        # refuted, recovered, never_held or unmeasurable. Carried because "it held
+        # when we wrote it down" and "it holds now" are different facts, and a
+        # consumer that cannot tell them apart reads the past as the present.
+        # None means the source did not say, and is treated as unknown - never as
+        # fresh.
+        self.status = status
+
+    @property
+    def current(self) -> bool:
+        """Is this a CURRENT observation, as opposed to an aged or absent one?
+
+        A stale row was measured outside the window its own author declared, and an
+        absent one was never measured at all. Neither is an observation of now.
+        """
+        return self.observed is not None and self.status not in ("stale", "unmeasurable")
 
     def item(self, horizon_minutes: int) -> Item:
         return Item(
@@ -75,6 +91,40 @@ class Assertion:
     def __repr__(self) -> str:
         return "Assertion(%s, %s, observed=%s)" % (self.host, self.kind,
                                                    self.observed)
+
+
+def current_value(observed: Optional[bool],
+                  status: Optional[str]) -> Optional[bool]:
+    """Put the stored claim and the current verdict back together.
+
+    WHY THIS EXISTS. The fleet store keeps two things in one row: the value the
+    assertion had WHEN IT WAS CLAIMED, and the self-model's verdict on it NOW. It
+    does not keep observed_now, so a consumer handed only the row has to reconstruct
+    the present from those two or it will do something worse - report the claim.
+
+    Measured on throne 2026-10-02, tools/fleet_trust.py read row["observed"] alone.
+    A row whose verdict was "refuted" - it held when written down and does NOT hold
+    now - was therefore fed to the routing model as TRUE, and a row whose verdict was
+    "recovered" was fed as FALSE. Nothing was wrong at the time of measurement only
+    because no row happened to be refuted, which is exactly the state in which a
+    fault like this survives: it is silent until something breaks, which is the
+    moment the router matters most.
+
+        fresh/stale    re-checked; the value is unchanged, and ageing is not change
+        refuted        held when claimed, does not hold now
+        recovered      did not hold when claimed, holds now
+        never_held     did not hold when claimed, still does not
+        unmeasurable   the check could not be run, so there is no value at all
+    """
+    if observed is None:
+        return None
+    if status is None:
+        return observed            # the source did not say; do not invent a change
+    if status == "unmeasurable":
+        return None
+    if status in ("refuted", "recovered"):
+        return not observed
+    return observed
 
 
 def assertions_to_items(assertions: Iterable[Assertion],

@@ -19,12 +19,15 @@
  "bin/fleet_run.sh": "2f4f0342fa55f21c0819eb5d7ad7dbb8",
  "bin/fleet_sweep_run.sh": "43c01d7de1b617072f2079b679807f3b",
  "bin/fleet_trust_run.sh": "574c176d5901862b6f900c9bfdbd04a0",
+ "deploy/attest-mcp2.service": "54b0b7222e8c43d232eff8a209f62e6b",
+ "deploy/fleet_restart_api.sh": "cb90ccfedfca0fb60d89919106f36052",
  "examples/panel_forecast.py": "c3c291b3d4fd7f5d402149f95e84e474",
  "tests/run_all.py": "fff5c8181879ae8ebcac8fb33a4ae679",
  "tests/test_conformance.py": "48dac94541ac3bb2c918273a9118fbed",
- "tools/deploy_check.py": "f256331cfd1809279487ee5ee1f9c35c",
- "tools/deploy_to_throne.sh": "11c961612471de21228bb3a9da934b21",
+ "tools/deploy_check.py": "05e0888372f23f779569cddbe85addba",
+ "tools/deploy_to_throne.sh": "03fbd83f42bf2c615128a40bc1f77ae7",
  "tools/fleet_coverage.py": "d8a31dc8fe0d8d9607ecd641bfb1cfe5",
  "tools/fleet_sweep.py": "61d0b7710f9f2632193ce3e08420f6dc",
- "tools/fleet_trust.py": "c2dea142f1f8027547648337eb6c9d5c"
+ "tools/fleet_trust.py": "c2dea142f1f8027547648337eb6c9d5c",
+ "tools/install_service.sh": "5b6eb0ce43d398b04bdb56297d745722"
 }

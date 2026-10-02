@@ -1,0 +1,47 @@
+# attest-mcp2.service - the estate's attestation ledger API on port 8260.
+#
+# WHY THIS FILE EXISTS. On 2026-10-02 the v0.3.0 API was found running as a bare
+# process inside /user.slice/user-1000.slice/session-3031.scope - a login session whose
+# shell had long since exited. /etc/systemd/system/attest.service already existed for
+# the LEGACY v1.0.0 service on 8250, and its own comment records the lesson:
+#
+#     "This service was a bare process launched by hand from an SSH session
+#      (user.slice/session-N.scope). It served the PUBLIC endpoint /attest/v1/health
+#      but nothing would have brought it back after a reboot, and no unit existed."
+#
+# That was written on 2026-09-21. Six weeks later the new service repeated it. The
+# process survived logout only because logind's KillUserProcesses defaults to no; a
+# reboot would have lost it, and only fleet_apiguard - a cron job that exists to shout
+# about exactly this - would have brought it back, up to thirty minutes later.
+#
+# Host-specific lines: User, Group, WorkingDirectory, ExecStart, ATTEST_HOME.
+
+[Unit]
+Description=Attest MCP - the estate attestation ledger API (port 8260)
+Documentation=file:/home/zixen15/SYSTEM_HISTORY.md file:/home/zixen15/attest-mcp2/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zixen15
+Group=zixen15
+WorkingDirectory=/home/zixen15/attest-mcp2
+Environment=ATTEST_HOME=/home/zixen15/.attest-ledger
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m attest serve --port 8260
+
+# The ledger is the only state that matters and it is opened by the process, not
+# written through a socket, so the API holds no exclusive claim on it. Restarting is
+# therefore always safe: seven fleet jobs write to the same file directly and are
+# unaffected by this process going away.
+Restart=always
+RestartSec=10
+
+# A start timeout, because a unit that hangs in activating is a unit systemd will
+# never start again - the stuck-activating failure sentinel already watches for.
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -59,6 +59,13 @@ DEFAULT_PATHS = (
     "tools/deploy_check.py", "tools/deploy_to_throne.sh",
     "tools/fleet_coverage.py",
     "tools/fleet_sweep.py", "tools/fleet_trust.py",
+    # The non-python deployment artefacts. The systemd unit and the guard that
+    # restarts the API are as load-bearing as the modules: on 2026-10-02 the v0.3.0
+    # API was found running as a bare process in a dead login session, having
+    # repeated a mistake the legacy service's own unit comment had recorded weeks
+    # earlier. Tracked here so a drifted unit is caught like a drifted module.
+    "deploy/attest-mcp2.service", "deploy/fleet_restart_api.sh",
+    "tools/install_service.sh",
 )
 
 

@@ -37,19 +37,19 @@ scp -q -o StrictHostKeyChecking=no -i "$KEY" \
 # The fleet runners carry real logic - the required-ledger guard, the lock-contention
 # shout, the truthful exit code - and they lived in ~/bin, outside the drift check that
 # caught five other files in one day. They are tracked now, and the crontab points here.
-ssh -o StrictHostKeyChecking=no -i "$KEY" "$HOST" "mkdir -p $DEST/bin"
+ssh -o StrictHostKeyChecking=no -i "$KEY" "$HOST" "mkdir -p $DEST/bin $DEST/deploy"
 scp -q -o StrictHostKeyChecking=no -i "$KEY" \
   bin/*.sh "$HOST:$DEST/bin/"
+# deploy/ holds the artefacts that are not python: the systemd unit and the guard
+# script that restarts the API. They are tracked like everything else, so a drifted
+# unit is caught by the same check as a drifted module. install_service.sh reads them
+# from here, which is why they must land before it is ever run.
+scp -q -o StrictHostKeyChecking=no -i "$KEY" \
+  deploy/* "$HOST:$DEST/deploy/"
 scp -q -o StrictHostKeyChecking=no -i "$KEY" \
   tests/test_conformance.py tests/run_all.py "$HOST:$DEST/tests/"
 scp -q -o StrictHostKeyChecking=no -i "$KEY" deploy_manifest.json "$HOST:$DEST/"
 
-# RESTART THE LONG-LIVED PROCESS, or the deployment is only half done.
-#
-# Files landing on disk does not change what a running server serves. On 2026-10-02 the
-# API process served EIGHT operations while disk had ELEVEN and silently dropped due_at
-# from every request - turning forecasts into retrospectives with "ok": true - for over
-# an hour, while every file hash matched. Deploying and restarting are one operation.
 # RESTART THE LONG-LIVED PROCESS, or the deployment is only half done.
 #
 # Files landing on disk does not change what a running server serves. On 2026-10-02 the

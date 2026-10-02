@@ -38,9 +38,35 @@ scp -q -o StrictHostKeyChecking=no -i "$KEY" \
   tests/test_conformance.py tests/run_all.py "$HOST:$DEST/tests/"
 scp -q -o StrictHostKeyChecking=no -i "$KEY" deploy_manifest.json "$HOST:$DEST/"
 
-echo "== verifying what landed =="
+# RESTART THE LONG-LIVED PROCESS, or the deployment is only half done.
+#
+# Files landing on disk does not change what a running server serves. On 2026-10-02 the
+# API process served EIGHT operations while disk had ELEVEN and silently dropped due_at
+# from every request - turning forecasts into retrospectives with "ok": true - for over
+# an hour, while every file hash matched. Deploying and restarting are one operation.
+# RESTART THE LONG-LIVED PROCESS, or the deployment is only half done.
+#
+# Files landing on disk does not change what a running server serves. On 2026-10-02 the
+# API process served EIGHT operations while disk had ELEVEN and silently dropped due_at
+# from every request - turning forecasts into retrospectives with "ok": true - for over
+# an hour, while every file hash matched. Deploying and restarting are one operation.
+#
+# THE RESTART IS A FILE ON THE HOST, not an inline ssh command. It was inline first, with
+# nested quoting inside a generated script, and it broke: the pkill worked and the restart
+# did not, leaving the estate with no API at all. A deploy step that can take the service
+# down and fail to bring it up is worse than one that leaves it stale.
+echo "== restarting the long-lived API so it serves the new code =="
 ssh -o StrictHostKeyChecking=no -i "$KEY" "$HOST" \
-  "cd $DEST && python3 tools/deploy_check.py --check deploy_manifest.json --root . --quiet"
+  "bash $DEST/bin_restart_api.sh 2>/dev/null || bash /home/zixen15/bin/fleet_restart_api.sh"
+restart_rc=$?
+if [ "$restart_rc" -ne 0 ]; then
+  echo "THE API DID NOT COME BACK. The files are deployed and the service is DOWN." >&2
+  exit "$restart_rc"
+fi
+
+echo "== verifying what landed, and what is running it =="
+ssh -o StrictHostKeyChecking=no -i "$KEY" "$HOST" \
+  "cd $DEST && python3 tools/deploy_check.py --check deploy_manifest.json --root . --quiet --running 'attest serve'"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "DEPLOY FAILED VERIFICATION (exit $rc) - the deployment is not the code that" >&2

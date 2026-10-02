@@ -99,13 +99,35 @@ def process_check(root: str, manifest: dict, patterns):
         return [], []
     stale, fresh = [], []
     now = time.time()
-    # EXCLUDE OURSELVES. pgrep -f matches a full command line, and this script is
-    # invoked as "deploy_check.py --check ... --running 'attest serve'" - so the
-    # pattern is IN its own cmdline and it matches itself. Observed on 2026-10-02:
-    # the check reported "process ok  attest serve (pid 4177608)" for a process that
-    # was this script. Being always fresh, it inflates the count and can mask a real
-    # one in a list somebody is scanning.
-    mine = {os.getpid(), os.getppid()}
+    # EXCLUDE OURSELVES AND THE WHOLE CHAIN THAT SPAWNED US.
+    #
+    # pgrep -f matches a full command line, and this script is invoked as
+    # "deploy_check.py --check ... --running 'attest serve'" - so the pattern is in
+    # its own cmdline and it matches itself. Observed 2026-10-02: "process ok
+    # attest serve (pid 4177608)" for a process that was this script.
+    #
+    # Excluding getpid() and getppid() was NOT enough. The runner wraps this in
+    # "timeout 180 /bin/bash -c '... --running "attest serve"'", and the timeout
+    # ancestor carries the pattern too, so two phantoms survived the first fix -
+    # always freshly started, always reading as healthy, inflating the count in a
+    # list somebody is scanning. Walk the whole ancestor chain instead; the first
+    # fix was the same bug, incompletely repaired.
+    mine = set()
+    pid = os.getpid()
+    for _ in range(16):
+        if not pid or pid in mine:
+            break
+        mine.add(pid)
+        try:
+            with open("/proc/%d/status" % pid) as fh:
+                for line in fh:
+                    if line.startswith("PPid:"):
+                        pid = int(line.split()[1])
+                        break
+                else:
+                    break
+        except Exception:
+            break
     for pattern in patterns:
         try:
             out = subprocess.run(["pgrep", "-f", pattern], capture_output=True,

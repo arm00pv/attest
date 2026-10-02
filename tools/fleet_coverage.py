@@ -47,6 +47,21 @@ ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 # listed here has no claimed cadence and cannot be said to have missed one.
 PERIODS = {"panel15m": 900, "panel1h": 3600, "sweep1d": 86400, "hosttrust": 21600}
 
+# A WAL that has grown past this is not normal. Measured on 2026-10-02: with a
+# reader holding an open snapshot the WAL grows ~26 KB PER WRITTEN DECISION and
+# never checkpoints, because a checkpoint cannot advance past the oldest live
+# snapshot. 1000 writes took it to 26 MB; released, one TRUNCATE checkpoint took it
+# back to zero with the rows and the integrity intact.
+#
+# This is a failure mode WAL INTRODUCED. Without it a stuck reader blocks writers,
+# which the fleet now detects and shouts about. With it the writers keep succeeding
+# and the disk fills quietly instead. The threshold is 4x the normal steady state of
+# about 4 MB, not 8x: 26 MB is already six times normal and in the measurement above
+# it meant a reader was stuck, so waiting until 32 MB would sit on the news. At the
+# estate's rate of roughly 500 decisions a day a stuck reader crosses 16 MB in
+# something under a day.
+WAL_WARN_MB = 16.0
+
 # How much slack before a gap or a silence counts. Timers drift and a run can be a
 # little late; 1.6 periods means two whole missed cycles are always reported and a
 # few seconds of jitter never is.
@@ -59,7 +74,7 @@ def stamp(cohort):
 
 
 def analyse(series, periods=None, now=None, slack=SLACK, known=None,
-            targets=None):
+            targets=None, wal_bytes=None, wal_warn_mb=WAL_WARN_MB):
     """Pure. series is {stratum: [iso timestamps]}; returns the report and problems.
 
     Kept free of the database and with an injectable clock so it can be controlled:
@@ -83,6 +98,33 @@ def analyse(series, periods=None, now=None, slack=SLACK, known=None,
     known = set(known or ())
     targets = targets or {}
     report, problems = [], []
+
+    # THE COST OF THE CURE. Checked here because this is the instrument that looks
+    # at the ledger's own health, and because an unbounded WAL is exactly the kind of
+    # quiet, non-fatal condition that nothing else would ever mention.
+    wal = None
+    if wal_bytes is not None:
+        wal = {"bytes": wal_bytes, "mb": round(wal_bytes / 1048576.0, 1),
+               "warn_mb": wal_warn_mb}
+        if wal_bytes > wal_warn_mb * 1048576.0:
+            key = "wal|oversized"
+            wal["already_reported"] = key in known
+            wal["verdict"] = "WAL TOO LARGE"
+            if not wal["already_reported"]:
+                problems.append(
+                    "the ledger WAL is %.1f MB against a %d MB threshold. WAL "
+                    "cannot checkpoint past the oldest live snapshot, so this "
+                    "almost always means something is holding a read transaction "
+                    "open - the long-lived API process, most likely. Writers are "
+                    "still succeeding and the disk is filling quietly. A single "
+                    "wal_checkpoint(TRUNCATE) will reclaim it once the holder "
+                    "releases." % (wal["mb"], int(wal_warn_mb)))
+        else:
+            wal["verdict"] = "normal"
+    # Deliberately NOT appended here. The existing controls index report[0] as the
+    # stratum they asked about, and putting the ledger's own health at the front
+    # broke four of them - which is a fair complaint about a function that returns a
+    # positional list. Appended at the end instead.
 
     for stratum in sorted(periods):
         period = periods[stratum]
@@ -170,6 +212,10 @@ def analyse(series, periods=None, now=None, slack=SLACK, known=None,
             entry["verdict"] = "complete"
         report.append(entry)
 
+    # The ledger's own health last, so the strata keep their positions.
+    report.append({"stratum": "(ledger wal)", "cohorts": 0, "verdict":
+                   (wal or {}).get("verdict", "not checked"), "wal": wal,
+                   "gaps": [], "partial": []})
     return report, problems
 
 
@@ -208,12 +254,16 @@ def main():
         targets[stratum] = [(stamp(r["cohort"]), r["n"], r["m"]) for r in rows
                             if stamp(r["cohort"])]
 
-    report, problems = analyse(series, now=args.now, known=known, targets=targets)
+    wal_path = args.db + "-wal"
+    wal_bytes = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+    report, problems = analyse(series, now=args.now, known=known, targets=targets,
+                               wal_bytes=wal_bytes)
     # PARTIAL must be counted here. It is a JUDGED verdict - the run was measured
     # and found to cover less - and leaving it out means a run of all-PARTIAL
     # strata would report "NOT MEASURED", which is the opposite of what happened.
     measured = sum(1 for r in report
-                   if r["verdict"] in ("complete", "GAPS", "PARTIAL", "STALLED"))
+                   if r["verdict"] in ("complete", "GAPS", "PARTIAL", "STALLED",
+                                       "normal"))
 
     # Remember every gap seen, so the next run stays quiet about it.
     seen = set(known)
@@ -223,6 +273,9 @@ def main():
         for p in r.get("partial", []):
             seen.add("%s|partial|%s|%s|%s" % (r["stratum"], p["what"], p["from"],
                                               p["to"]))
+    if (known_wal := any(x.get("wal", {}) and x["wal"].get("already_reported")
+                         for x in report if x.get("wal"))):
+        seen.add("wal|oversized")
     if seen != known:
         tmp = args.state + ".tmp"
         try:

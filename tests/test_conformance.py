@@ -834,6 +834,49 @@ def c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored(
        len(fresh) == 1 and "11:00:00Z -> 2026-10-02T11:45:00Z" in fresh[0], fresh)
 
 
+def c052_the_cure_has_a_cost_and_it_is_measured():
+    """WAL traded a loud failure for a quiet one, and this is the quiet one.
+
+    Measured on 2026-10-02 with a reader holding an open snapshot: writes all
+    succeeded, and the WAL grew ~26 KB per written decision, 5 MB -> 26 MB over a
+    thousand writes, because a checkpoint cannot advance past the oldest live
+    snapshot. Without WAL that reader would have BLOCKED the writers, which the
+    fleet now detects and shouts about. With WAL the writers keep succeeding and the
+    disk fills with nothing saying a word.
+
+    Released, one wal_checkpoint(TRUNCATE) took it from 26 MB to zero with the rows
+    and the integrity intact - so the condition is recoverable and merely unnoticed.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from fleet_coverage import analyse, WAL_WARN_MB
+    P = {"hourly": 3600}
+    s = {"hourly": ["2026-10-02T10:00:00Z", "2026-10-02T11:00:00Z"]}
+    now = "2026-10-02T11:05:00Z"
+
+    def wal(mb):
+        rep, probs = analyse(s, P, now=now, wal_bytes=int(mb * 1048576))
+        entry = [x for x in rep if x["stratum"] == "(ledger wal)"][0]["wal"]
+        return entry, probs
+
+    e1, p1 = wal(4)
+    ok("C052 a WAL at its normal steady state is not flagged",
+       e1["verdict"] == "normal" and not p1, e1)
+
+    e2, p2 = wal(WAL_WARN_MB * 3)
+    ok("C052b one that has grown to three times the threshold is",
+       e2["verdict"] == "WAL TOO LARGE" and len(p2) == 1, e2)
+    ok("C052c and the problem says what it means and what to do about it",
+       "cannot checkpoint past the oldest live snapshot" in p2[0]
+       and "wal_checkpoint(TRUNCATE)" in p2[0], p2[0][:120])
+
+    # The same already-reported rule as gaps and partials.
+    rep_k, probs_k = analyse(s, P, now=now, wal_bytes=int(WAL_WARN_MB * 3 * 1048576),
+                             known={"wal|oversized"})
+    entry_k = [x for x in rep_k if x["stratum"] == "(ledger wal)"][0]["wal"]
+    ok("C052d and an oversized WAL already reported does not re-alert every run",
+       not probs_k and entry_k["already_reported"] is True, entry_k)
+
+
 def c051_the_real_write_paths_survive_each_other():
     """C047 spawns five identical synthetic writers. That proves the timeout works
     and says nothing about the three DIFFERENT write shapes the estate actually
@@ -1300,7 +1343,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c048_an_instrument_must_not_be_blind_to_its_own_silence,
             c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored,
             c050_a_run_can_succeed_and_still_cover_less,
-            c051_the_real_write_paths_survive_each_other]
+            c051_the_real_write_paths_survive_each_other,
+            c052_the_cure_has_a_cost_and_it_is_measured]
 
 
 def main():

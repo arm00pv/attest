@@ -41,11 +41,22 @@ STAMP_KEY = "__selfmodel_built_at__"
 
 
 def load_history(path):
+    """FileNotFoundError is a first run; anything else is a fault.
+
+    The same fix as the panel's: catching everything and returning {} turns a
+    corrupt file into "no history yet", which degrades the base-rate and
+    host-stability forecasters silently while every other signal stays green.
+    """
     try:
         with open(path) as fh:
             raw = json.load(fh)
-    except Exception:
+    except FileNotFoundError:
         return {}
+    except Exception as exc:
+        raise RuntimeError(
+            "the history file %s exists but cannot be read (%s: %s). Refusing to "
+            "continue rather than silently treating it as empty."
+            % (path, type(exc).__name__, exc))
     out = {}
     for k, v in raw.items():
         if k == STAMP_KEY:

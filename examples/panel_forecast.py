@@ -120,12 +120,31 @@ def sample_panel(panel: dict) -> dict:
 
 # -------------------------------------------------------------------- history
 def load_history(path: str) -> dict:
+    """Read the observation series.
+
+    FileNotFoundError is a FIRST RUN and is fine - there is nothing to read yet.
+    Anything else is not. A history file that exists and cannot be read is a fault,
+    and the old version caught every exception and returned {} - which silently
+    degraded the base-rate forecaster to 0.5 about everything, while every other
+    signal stayed green and the run exited 0.
+
+    Measured on 2026-10-02: with a corrupt history file the panel recorded 42
+    forecasts, exit 0, no warning, and BaseRate answered [0.5, 0.5, 0.5, 0.5, 0.5]
+    for every target. It is not raised quietly for the same reason it is not
+    overwritten: something wrote that file, and clobbering it destroys the evidence.
+    """
     try:
         with open(path, "r") as fh:
             h = json.load(fh)
-        return {k: [bool(x) for x in v] for k, v in h.items() if isinstance(v, list)}
-    except Exception:
+    except FileNotFoundError:
         return {}
+    except Exception as exc:
+        raise RuntimeError(
+            "the history file %s exists but cannot be read (%s: %s). Refusing to "
+            "continue: treating it as empty would silently reduce the base-rate "
+            "forecaster to 0.5 about everything, and overwriting it would destroy "
+            "whatever is in there." % (path, type(exc).__name__, exc))
+    return {k: [bool(x) for x in v] for k, v in h.items() if isinstance(v, list)}
 
 
 def save_history(path: str, observed: dict, history: dict) -> None:

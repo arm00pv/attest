@@ -100,6 +100,54 @@ Claude Desktop sees it as:
 
 ---
 
+## The half that makes the numbers mean something
+
+A checker can tell you whether a claim is true. It cannot tell you whether the thing
+telling you claims is any **good**. That needs a different instrument: a record of
+every judgment, taken with the confidence it was made at, scored later against what
+actually happened.
+
+That is the decision ledger, and the part that matters is the ordering.
+
+A **retrospective** is recorded and settled in the same breath, about something that
+has already happened. It cannot be wrong about the future, because it is not about
+the future — and it can still produce a flawless calibration table, which will then
+be quoted.
+
+A **forecast** is written down while the answer is still unknown and settled
+afterwards by something that did not make it. `record()` takes a `due_at`; a
+`due_at` that has already passed is **refused**, because an outcome that is knowable
+at the moment of recording is not a prediction.
+
+Three things the ledger will not do:
+
+- **It will not count a silence as a success.** An unresolved decision is excluded
+  from every rate, and the ledger separates "not knowable yet" from "knowable and
+  never written down" from "was never a forecast at all". The middle one is a broken
+  resolver, and it says so.
+- **It will not print a rate it has not earned.** Below `MIN_N` resolved decisions
+  it reports the count and refuses to give a number. Measured at n=108, a calibration
+  error of 0.066 could not be separated from 0.061 — a rate below a few dozen
+  decisions is noise with a decimal point.
+- **It will not call a rate "skill" on a population that cannot show any.** If
+  nineteen outcomes in twenty are the same answer, a predictor that always gives that
+  answer scores 95% and knows nothing. `discriminability()` asks that question
+  *before* any rate is presented, and refuses. The first forecasting panel run against
+  this project's own estate came back with fourteen items that were all true — the
+  guard caught it before a single number was reported.
+
+Calibration is also not the same as skill: a forecaster that always says 0.30 is
+perfectly calibrated on a 30% population and carries no information at all. So
+`head_to_head()` reports Brier and a skill score against the base rate alongside it,
+and horizons are stratified so a decision settled in five minutes is never pooled with
+one settled in three weeks.
+
+See [`examples/panel_forecast.py`](examples/panel_forecast.py) for the whole loop in
+about three hundred lines: sample a panel, write down what the next sample will be,
+settle the old ones when it arrives, and let the ledger say who was right.
+
+---
+
 ## It runs locally, and that is deliberate
 
 The checkers need a real toolchain: a Lean installation, a Python interpreter, a
@@ -135,7 +183,7 @@ exists to argue against.
 ## The conformance suite
 
 ```bash
-python tests/test_conformance.py   # 38 controls
+python tests/test_conformance.py   # 82 controls
 python tests/smoke_http.py         # end-to-end over real HTTP
 python tests/smoke_mcp.py          # end-to-end against a real MCP client, over stdio
 python tests/smoke_mcp_transports.py  # the streamable-http and sse transports

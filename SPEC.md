@@ -184,7 +184,59 @@ Where MCP is offered:
 
 ---
 
-## 8. Conformance
+## 8. Decisions and forecasts
+
+A decision is a judgment the system made, recorded with the confidence it was made
+at, so that it can later be scored. A forecast is a decision whose outcome is not
+yet knowable. The two are stored in one table and MUST remain distinguishable in
+every query.
+
+- **R28.** A decision records the confidence it was made at. A `noul` decision with
+  no probability MUST be refused rather than stored as though it were fine.
+- **R29.** A decision MUST be settlable once and only once. A decision that can be
+  quietly revised after the fact is not a prediction, it is a retrospective.
+- **R30.** A decision with no recorded outcome MUST NOT be counted as correct, and
+  MUST be excluded from every reported rate. Silence is not success.
+- **R31.** A rate MUST NOT be reported from fewer than MIN_N resolved decisions. Below
+  that threshold the implementation MUST report the count and refuse to give a number.
+- **R32.** A decision carrying a `due_at` MUST be refused if that `due_at` is not in
+  the future. An outcome that is knowable at the moment of recording is not a
+  prediction, and MUST NOT be stored under a forecast's name.
+- **R33.** Only decisions that named a `due_at` MAY come due. A decision that never
+  named one MUST NOT be selected for settlement: sweeping those up would convert
+  "nobody ever checked" into a rate.
+- **R34.** A resolver that cannot determine an outcome, or that fails, MUST leave the
+  decision open. Neither MAY be recorded as an outcome. A failed measurement is not a
+  result.
+- **R35.** Reported calibration MUST be broken out by stratum whenever more than one
+  is present, and MUST NOT silently pool horizons. A decision settled in five minutes
+  and one settled in three weeks are not the same measurement.
+- **R36.** Before any rate is presented, the implementation MUST state whether the
+  population of outcomes could discriminate at all. Where a constant predictor already
+  achieves nearly all of the observed rate, the rate MUST NOT be presented as skill.
+- **R37.** Ranking forecasters MUST use a proper scoring rule in addition to
+  calibration. A forecaster can be perfectly calibrated and carry no information.
+- **R38.** The number of distinct cohorts MUST be reported alongside the number of
+  resolved decisions, because decisions inside one batch share a cause and are not
+  independent observations.
+
+### 8.1 Rationale (informative)
+
+R32 through R34 are the rules that make the rest mean anything. A ledger full of
+retrospectives can report a flawless calibration while never once having been wrong
+about the future, because it was never about the future. The reference implementation
+held 35 decisions before R32 existed; all 35 were recorded and resolved inside a single
+function call, about messages that had already been classified.
+
+R36 exists because a stable system produces a degenerate population. If nineteen
+outcomes in twenty are the same answer, a predictor that always gives that answer scores
+95% and knows nothing. The reference implementation's first forecasting panel returned
+fourteen items that were all true, and the guard refused to call it skill before a single
+number was reported.
+
+---
+
+## 9. Conformance
 
 A conforming implementation provides a test suite in which:
 
@@ -195,6 +247,10 @@ A conforming implementation provides a test suite in which:
   DISPUTED. This is the load-bearing rule; without it the rest is decoration.
 - **R27.** A control that cannot run reports a distinct SKIPPED status. SKIPPED
   MUST NOT be counted or presented as a pass.
+- **R27a.** A control MUST exist for the UPGRADE path, not only the fresh-install path.
+  A database written by an earlier version MUST open after the change, keep its rows, and
+  accept new writes. The two paths are not the same path, and testing only one of them
+  hid a fault that stopped every existing ledger from opening.
 
 ---
 
@@ -211,5 +267,5 @@ A conforming implementation provides a test suite in which:
 
 ## Appendix B — Reference implementation
 
-`attest` v0.1.0 implements this specification. 38 automated controls; see
+`attest` v0.3.0 implements this specification. 82 automated controls; see
 `tests/test_conformance.py`.

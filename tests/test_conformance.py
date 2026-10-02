@@ -834,6 +834,76 @@ def c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored(
        len(fresh) == 1 and "11:00:00Z -> 2026-10-02T11:45:00Z" in fresh[0], fresh)
 
 
+def c051_the_real_write_paths_survive_each_other():
+    """C047 spawns five identical synthetic writers. That proves the timeout works
+    and says nothing about the three DIFFERENT write shapes the estate actually
+    uses, which take the lock in different ways:
+
+        a batched forecast  - record_forecasts, one commit for the whole batch
+        per-decision writes - record(), one commit and one audit row each
+        repeated opens      - Store(), which runs executescript(SCHEMA) every time
+
+    Run together against one database, they must all finish and lose nothing. This
+    is the shape that broke for real on 2026-10-02, when a panel run died with
+    "database is locked" while a batch of forecasts was being recorded."""
+    d = tempfile.mkdtemp(prefix="attest_mix_")
+    db = os.path.join(d, "m.db")
+    Store(db)
+
+    batched = os.path.join(d, "batched.py")
+    with open(batched, "w") as fh:
+        fh.write("import sys\n"
+                 "sys.path.insert(0, %r)\n"
+                 "from attest import Store, DecisionLedger\n"
+                 "from attest.decisions import now_iso\n"
+                 "from attest.forecast import Constant, Item, record_forecasts\n"
+                 "l = DecisionLedger(Store(sys.argv[1]))\n"
+                 "items = [Item('b%%d' %% i, 'q?', stratum='batched')\n"
+                 "         for i in range(100)]\n"
+                 "record_forecasts(l, items, [Constant(0.5, 'n1'),\n"
+                 "                            Constant(0.9, 'n2')],\n"
+                 "                cohort='batched', due_at=now_iso(600))\n" % ROOT)
+
+    percall = os.path.join(d, "percall.py")
+    with open(percall, "w") as fh:
+        fh.write("import sys\n"
+                 "sys.path.insert(0, %r)\n"
+                 "from attest import Store, DecisionLedger\n"
+                 "from attest.decisions import now_iso\n"
+                 "l = DecisionLedger(Store(sys.argv[1]))\n"
+                 "for i in range(200):\n"
+                 "    l.record('per-decision', 'a', qtype='noul',\n"
+                 "             probability=0.5, due_at=now_iso(600),\n"
+                 "             stratum='percall', commit=True)\n" % ROOT)
+
+    opener = os.path.join(d, "opener.py")
+    with open(opener, "w") as fh:
+        fh.write("import sys\n"
+                 "sys.path.insert(0, %r)\n"
+                 "from attest import Store\n"
+                 "for i in range(25):\n"
+                 "    Store(sys.argv[1])\n" % ROOT)
+
+    procs = [(os.path.basename(p), subprocess.Popen(
+        [sys.executable, p, db], stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+        for p in (batched, percall, opener)]
+    bad = []
+    for name, p in procs:
+        _o, e = p.communicate(timeout=300)
+        if p.returncode != 0:
+            bad.append((name, (e or b"").decode()[-160:]))
+
+    con = sqlite3.connect(db)
+    counts = dict(con.execute(
+        "SELECT stratum, COUNT(*) FROM decisions GROUP BY stratum").fetchall())
+    ok("C051 all three real write shapes finish together and none loses anything",
+       not bad and counts.get("batched") == 200 and counts.get("percall") == 200,
+       {"errors": bad, "counts": counts})
+    ok("C051b and the database is intact afterwards",
+       con.execute("PRAGMA integrity_check").fetchone()[0] == "ok", counts)
+    con.close()
+
+
 def c048_an_instrument_must_not_be_blind_to_its_own_silence():
     """The coverage check compares consecutive cohorts, so it can only see a gap
     BETWEEN two runs. A stratum that stops entirely writes no further cohorts, so
@@ -1229,7 +1299,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c047_concurrent_writers_lose_nothing,
             c048_an_instrument_must_not_be_blind_to_its_own_silence,
             c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored,
-            c050_a_run_can_succeed_and_still_cover_less]
+            c050_a_run_can_succeed_and_still_cover_less,
+            c051_the_real_write_paths_survive_each_other]
 
 
 def main():

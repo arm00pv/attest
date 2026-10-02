@@ -34,7 +34,7 @@ from .decisions import now_iso
 __all__ = [
     "Item", "Forecaster", "Constant", "BaseRate", "Persistence",
     "record_forecasts", "resolve_due", "brier", "brier_skill_score",
-    "head_to_head",
+    "brier_decomposition", "head_to_head",
 ]
 
 
@@ -262,6 +262,51 @@ def brier(pairs: Iterable[Tuple[float, int]]) -> Optional[float]:
     return sum((p - y) ** 2 for p, y in ps) / len(ps)
 
 
+def brier_decomposition(pairs: Iterable[Tuple[float, int]],
+                        bins: int = 10) -> Optional[Dict[str, float]]:
+    """Murphy decomposition: Brier = reliability - resolution + uncertainty.
+
+    RELIABILITY is calibration error - how far the claimed probability sits from what
+    actually happened, averaged over the bins. Lower is better.
+
+    RESOLUTION is the term that matters when an event is rare, and it is the one
+    accuracy can never show you. It measures how far each bin's observed rate sits
+    from the overall base rate: that is, whether the forecaster distinguishes the
+    hard cases from the easy ones. A forecaster that says the same thing about
+    everything has resolution exactly zero however accurate it looks. On a population
+    where one target in forty is broken, "nothing will break" scores 97.6% accuracy
+    and has resolution zero, and every accuracy-based summary will call it excellent.
+
+    UNCERTAINTY is a property of the population, not of the forecaster: it is the
+    base-rate entropy, and it caps the resolution that is available to anybody.
+
+    The three terms reconstruct the Brier score exactly, which is checked by control.
+    """
+    ps = [(float(p), int(y)) for p, y in pairs if p is not None]
+    n = len(ps)
+    if n == 0:
+        return None
+    obar = sum(y for _p, y in ps) / n
+    edges = [i / float(bins) for i in range(bins + 1)]
+    reliability = resolution = 0.0
+    for i in range(bins):
+        lo, hi = edges[i], edges[i + 1]
+        sel = [(p, y) for p, y in ps
+               if (lo <= p < hi) or (i == bins - 1 and p >= hi)]
+        if not sel:
+            continue
+        nk = len(sel)
+        pk = sum(p for p, _y in sel) / nk
+        ok = sum(y for _p, y in sel) / nk
+        reliability += (nk / n) * (pk - ok) ** 2
+        resolution += (nk / n) * (ok - obar) ** 2
+    uncertainty = obar * (1.0 - obar)
+    direct = sum((p - y) ** 2 for p, y in ps) / n
+    return {"n": n, "base_rate": obar, "reliability": reliability,
+            "resolution": resolution, "uncertainty": uncertainty,
+            "brier": direct, "reconstructed": reliability - resolution + uncertainty}
+
+
 def brier_skill_score(pairs: Iterable[Tuple[float, int]],
                       reference: float) -> Optional[float]:
     """1 - Brier/Brier_of_the_reference. Positive means it beat the reference.
@@ -315,9 +360,15 @@ def head_to_head(ledger, models: Sequence[str], stratum: Optional[str] = None,
                           "the cohorts, not the mean." % (lo, hi, len(per_cohort)))
         ref = None if base is None else sum(
             (float(base) - y) ** 2 for _p, y in pairs) / len(pairs) if pairs else None
+        dec = brier_decomposition(pairs)
         rows.append({
             "model": m,
             "resolved": cal["resolved"], "unresolved": cal["unresolved"],
+            # Reported because on a rare-event population these are the only terms
+            # that can tell a real forecaster from a constant one. Accuracy cannot.
+            "resolution": (None if dec is None else round(dec["resolution"], 5)),
+            "reliability": (None if dec is None else round(dec["reliability"], 5)),
+            "uncertainty": (None if dec is None else round(dec["uncertainty"], 5)),
             "cohorts": cal.get("cohorts"),
             "independence_warning": cal.get("independence_warning"),
             "brier_by_cohort": per_cohort, "cohort_spread_warning": spread,

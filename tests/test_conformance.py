@@ -680,6 +680,40 @@ def c035_two_forecasters_are_scored_on_the_same_items():
        [r["probability"] for r in rows if r["model"] == "base-rate"])
 
 
+def c042_resolution_is_the_thing_accuracy_cannot_see():
+    """The daily sweep has one broken target in forty-one, so a forecaster that says
+    "nothing will break" scores 97.6% accuracy. Every accuracy-shaped summary calls
+    that excellent and it knows nothing whatsoever. The resolution term is the only
+    one that says so, and without it the consequential stratum would be unscoreable."""
+    from attest.forecast import brier_decomposition, brier, Constant
+
+    # One true in forty. A constant forecaster at the base rate.
+    rare = [(0.025, 1 if i == 0 else 0) for i in range(40)]
+    d = brier_decomposition(rare)
+    acc = sum(1 for _p, y in rare if y == 0 and _p < 0.5 or y == 1 and _p >= 0.5) / len(rare)
+    ok("C042 a constant forecaster on a rare population scores high accuracy",
+       acc >= 0.97, acc)
+    ok("C042b and resolution EXACTLY zero, however good the accuracy looks",
+       d["resolution"] == 0.0, d)
+
+    # A forecaster that actually separates the rare case from the common one.
+    sep = [(0.9, 1)] * 30 + [(0.1, 0)] * 10
+    d2 = brier_decomposition(sep)
+    ok("C042c while one that separates them has real resolution",
+       d2["resolution"] > 0.1 and d2["reliability"] < 0.05, d2)
+
+    # The decomposition must reconstruct the Brier score, or it is a story.
+    from attest.forecast import Constant as _C, Item as _I
+    for label, pairs in (("rare", rare), ("separating", sep),
+                         ("mixed", [(_C(0.5).predict(_I("t", "q")), i % 3 == 0)
+                                    for i in range(45)])):
+        dd = brier_decomposition(pairs)
+        ok("C042d [%s] reliability - resolution + uncertainty reconstructs the "
+           "Brier score exactly" % label,
+           abs(dd["brier"] - dd["reconstructed"]) < 1e-12,
+           {"brier": dd["brier"], "reconstructed": dd["reconstructed"]})
+
+
 def c041_a_pooled_score_may_not_hide_a_change_of_method():
     """Found on the real estate, and it nearly produced a false result.
 
@@ -865,7 +899,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c038_the_recorded_answer_agrees_with_the_probability,
             c039_a_short_gap_is_not_reported_as_a_broken_resolver,
             c040_a_headline_may_not_overstate_the_sample_it_rests_on,
-            c041_a_pooled_score_may_not_hide_a_change_of_method]
+            c041_a_pooled_score_may_not_hide_a_change_of_method,
+            c042_resolution_is_the_thing_accuracy_cannot_see]
 
 
 def main():

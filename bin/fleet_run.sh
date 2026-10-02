@@ -87,7 +87,21 @@ like a healthy run while the history was gone."
   exit 70
 fi
 
-OUT=$(timeout "$TMO" "$@" 2>&1)
+# 9>&- CLOSES THE LOCK DESCRIPTOR FOR THE CHILD AND EVERYTHING IT STARTS.
+#
+# Found on 2026-10-02: a job that launches a DAEMON handed it the lock. api_guard.sh
+# called fleet_restart_api.sh, which started the ledger API with setsid nohup - and the
+# new process inherited fd 9, the flock this runner holds. An inherited flock belongs to
+# the process that still has the descriptor open, so the API held the apiguard lock
+# forever:
+#
+#     zixen15 34694 F.... python3   /home/zixen15/logs/.fleet_apiguard.lock
+#     the lock is HELD right now
+#
+# Every subsequent apiguard run then reported rc=75, "another copy holds the lock", which
+# is a permanent false alarm from the signal added to catch exactly this class of thing.
+# A short-lived child releases it when it exits; a daemon never does.
+OUT=$(timeout "$TMO" "$@" 9>&- 2>&1)
 rc=$?
 
 # The heartbeat is stamped whether or not the job worked. A job that stopped

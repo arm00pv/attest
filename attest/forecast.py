@@ -178,6 +178,11 @@ def record_forecasts(ledger, items: Sequence[Item], forecasters: Sequence[Foreca
     a half hours for a daily one - and the next run always clears it.
     """
     written, refused = [], []
+    # ONE COMMIT FOR THE WHOLE BATCH, not one per decision. Recording three hundred
+    # forecasts one commit at a time means three hundred fsyncs holding the writer
+    # lock in three hundred separate bursts, and on 2026-10-02 that was long enough
+    # for a scheduled panel run to lose its turn with "database is locked". Batching
+    # is the fix that removes the contention rather than merely tolerating it.
     for item in items:
         for f in forecasters:
             p = f.predict(item, history)
@@ -196,13 +201,14 @@ def record_forecasts(ledger, items: Sequence[Item], forecasters: Sequence[Foreca
                 probability=p, confidence=p, state=item.context,
                 model=f.name, who=who, alternatives=item.alternatives,
                 due_at=due_at, stratum=item.stratum, cohort=cohort,
-                target=item.target)
+                target=item.target, commit=False)
             if r.get("ok"):
                 written.append({"id": r["id"], "target": item.target,
                                 "model": f.name, "p": round(p, 4)})
             else:
                 refused.append({"target": item.target, "model": f.name,
                                 "why": r.get("error")})
+    ledger.db.commit()
     return {"ok": True, "cohort": cohort, "due_at": due_at,
             "items": len(items), "forecasters": len(forecasters),
             "recorded": len(written), "refused": refused, "decisions": written}

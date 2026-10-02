@@ -109,7 +109,8 @@ class DecisionLedger:
                state: str = "", model: str = "", who: str = "",
                alternatives: Optional[Dict[str, Any]] = None,
                due_at: Optional[str] = None, stratum: str = "",
-               cohort: str = "", target: str = "") -> Dict[str, Any]:
+               cohort: str = "", target: str = "",
+               commit: bool = True) -> Dict[str, Any]:
         """Log one decision, with the confidence it was made at.
 
         The probability is REQUIRED for a noul question. A boolean judgment with
@@ -162,8 +163,10 @@ class DecisionLedger:
              (None if confidence is None else float(confidence)),
              json.dumps(alternatives or {})[:4000],
              due_at, stratum[:60], cohort[:80], target[:200]))
-        self.db.commit()
-        self.store.ledger("decision_recorded", "%s %s" % (did, qtype))
+        if commit:
+            self.db.commit()
+        self.store.ledger("decision_recorded", "%s %s" % (did, qtype),
+                          commit=commit)
         return {"ok": True, "id": did, "status": "UNRESOLVED",
                 "prospective": due_at is not None,
                 "due_at": due_at,

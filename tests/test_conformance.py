@@ -724,6 +724,75 @@ def c044_a_host_without_evidence_is_excluded_not_ranked_last():
        r2["verdict"][:120])
 
 
+def c047_concurrent_writers_lose_nothing():
+    """Measured on the real estate on 2026-10-02, not imagined.
+
+    Four scheduled jobs write to one ledger. A panel run died with
+    "sqlite3.OperationalError: database is locked" while a batch of 294 forecasts
+    was being recorded, and that cycle was silently skipped - the heartbeat said
+    rc=1 and nothing read it. The store now runs in WAL with an explicit busy
+    timeout, and record_forecasts commits once per batch instead of once per
+    decision, which removes most of the contention rather than tolerating it."""
+    from attest.store import BUSY_TIMEOUT_MS
+    d = tempfile.mkdtemp(prefix="attest_conc_")
+    db = os.path.join(d, "c.db")
+    Store(db)                                    # create the schema first
+
+    worker = os.path.join(d, "w.py")
+    with open(worker, "w") as fh:
+        fh.write("import sys\n"
+                 "sys.path.insert(0, %r)\n"
+                 "from attest import Store, DecisionLedger\n"
+                 "from attest.decisions import now_iso\n"
+                 "l = DecisionLedger(Store(sys.argv[1]))\n"
+                 "for i in range(int(sys.argv[2])):\n"
+                 "    l.record('q', 'a', qtype='noul', probability=0.5,\n"
+                 "             due_at=now_iso(600))\n" % ROOT)
+
+    N, EACH = 5, 60
+    procs = [subprocess.Popen([sys.executable, worker, db, str(EACH)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+             for _ in range(N)]
+    errs = []
+    for p in procs:
+        _o, e = p.communicate(timeout=300)
+        if p.returncode != 0:
+            errs.append((e or b"").decode()[-200:])
+    got = sqlite3.connect(db).execute(
+        "SELECT COUNT(*) FROM decisions").fetchone()[0]
+    ok("C047 %d concurrent writers recording %d decisions each lose none"
+       % (N, EACH), got == N * EACH and not errs,
+       {"rows": got, "expected": N * EACH, "errors": errs[:2]})
+
+    # The negative half. If the same collision does NOT fail without a busy
+    # timeout, then the check above is passing for some reason other than the one
+    # being claimed, and it is decoration.
+    holder = sqlite3.connect(db)
+    holder.execute("BEGIN IMMEDIATE")            # take the write lock and keep it
+    blocked = sqlite3.connect(db, timeout=0)     # no patience at all
+    collided = False
+    try:
+        blocked.execute("INSERT INTO decisions (id, at, qtype) VALUES "
+                        "('dec:collide','2026-01-01T00:00:00Z','noul')")
+        blocked.commit()
+    except sqlite3.OperationalError as exc:
+        collided = "locked" in str(exc)
+    finally:
+        holder.rollback()
+        blocked.close()
+        holder.close()
+    ok("C047b and the same collision with no busy timeout DOES fail, so the "
+       "control is not passing by accident", collided)
+
+    # Check the artefact, not the outcome: the settings must actually be applied.
+    s = Store(db)
+    jm = s.db.execute("PRAGMA journal_mode").fetchone()[0]
+    bt = s.db.execute("PRAGMA busy_timeout").fetchone()[0]
+    ok("C047c the ledger is in WAL and waits %d ms for a writer, not the "
+       "library's unconsidered default" % BUSY_TIMEOUT_MS,
+       str(jm).lower() == "wal" and bt == BUSY_TIMEOUT_MS, {"wal": jm, "busy": bt})
+
+
 def c046_many_assertions_checked_twice_is_one_moment_in_time():
     """The same trap as many decisions inside one cohort, one layer down.
 
@@ -1003,7 +1072,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c043_an_unchecked_host_is_not_an_untrusted_one,
             c044_a_host_without_evidence_is_excluded_not_ranked_last,
             c045_a_perfect_record_does_not_buy_certainty,
-            c046_many_assertions_checked_twice_is_one_moment_in_time]
+            c046_many_assertions_checked_twice_is_one_moment_in_time,
+            c047_concurrent_writers_lose_nothing]
 
 
 def main():

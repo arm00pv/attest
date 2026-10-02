@@ -83,6 +83,13 @@ CREATE INDEX IF NOT EXISTS decisions_resolved ON decisions(correct);
 TIER_VERIFIED = "verified"
 TIER_ASSERTED = "asserted"
 
+# How long a writer waits for another writer before giving up. Python's default is
+# five seconds, which is not a considered value - it is just what sqlite3.connect
+# happens to use. It was measured as too short on 2026-10-02: an estate with four
+# jobs writing to one ledger lost a scheduled run to "database is locked" while a
+# batch of 294 forecasts was being recorded.
+BUSY_TIMEOUT_MS = 30000
+
 # Columns added when the ledger learned to hold a decision OPEN. A decision made
 # now and settled later is a different object from one that was scored in the
 # same breath as it was recorded, and the two must be separable in a query.
@@ -124,8 +131,22 @@ class Store:
         if parent:
             os.makedirs(parent, exist_ok=True)
         fresh = not os.path.exists(self.path)
-        self.db = sqlite3.connect(self.path, check_same_thread=False)
+        self.db = sqlite3.connect(self.path, check_same_thread=False,
+                                  timeout=BUSY_TIMEOUT_MS / 1000.0)
         self.db.row_factory = sqlite3.Row
+        # WAL, so that a reader does not block the writer and the writer does not
+        # block readers. Without it every read takes a shared lock on the whole
+        # file and a long write starves everybody. It is a persistent property of
+        # the database file, so setting it once is enough, and it is skipped
+        # rather than fatal where the filesystem cannot support it (some network
+        # shares), because losing concurrency is better than losing the store.
+        try:
+            self.db.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
+        # Set explicitly rather than relying on the connect() default, so the
+        # value is visible in the source instead of implied by a library.
+        self.db.execute("PRAGMA busy_timeout=%d" % BUSY_TIMEOUT_MS)
         self.db.executescript(SCHEMA)
         self.db.commit()
         _migrate(self.db)
@@ -133,12 +154,19 @@ class Store:
             self.ledger("store_created", self.path)
 
     # ------------------------------------------------------------------ ledger
-    def ledger(self, event: str, detail: str = "") -> None:
+    def ledger(self, event: str, detail: str = "", commit: bool = True) -> None:
+        """Append an audit event.
+
+        commit=False is for a caller that is already batching, so that recording
+        three hundred decisions does not mean three hundred fsyncs while every
+        other writer waits for the lock.
+        """
         try:
             self.db.execute("INSERT INTO ledger (at, event, detail) VALUES (?,?,?)",
                             (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                              event, detail[:400]))
-            self.db.commit()
+            if commit:
+                self.db.commit()
         except Exception:
             pass  # the ledger must never be able to fail the operation it records
 

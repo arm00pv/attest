@@ -724,6 +724,50 @@ def c044_a_host_without_evidence_is_excluded_not_ranked_last():
        r2["verdict"][:120])
 
 
+def c050_a_run_can_succeed_and_still_cover_less():
+    """Found in the real ledger before it was written here.
+
+    Two panel cohorts recorded 13 targets where every other run recorded 14, because
+    one item could not be measured. The run exited 0, stamped its heartbeat and its
+    beat, and recorded a cohort. fleet_coverage saw a cohort and called it complete.
+    Nothing said a word - only a human comparing cohort sizes would ever notice.
+
+    A DROP is the signal, not a difference: the sweep's target universe grows as new
+    timers appear, so 40 then 43 is healthy and must not be flagged."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from fleet_coverage import analyse
+    P = {"quarterly": 900}
+    series = {"quarterly": ["2026-10-02T10:00:00Z", "2026-10-02T10:15:00Z",
+                            "2026-10-02T10:30:00Z"]}
+    now = "2026-10-02T10:35:00Z"
+
+    dropped = {"quarterly": [("2026-10-02T10:00:00Z", 14),
+                             ("2026-10-02T10:15:00Z", 13),
+                             ("2026-10-02T10:30:00Z", 13)]}
+    rep, probs = analyse(series, P, now=now, targets=dropped)
+    ok("C050 a run that covered 13 items where the one before had 14 is PARTIAL",
+       rep[0]["verdict"] == "PARTIAL" and len(rep[0]["partial"]) == 1, rep[0])
+    ok("C050b and the problem names both counts",
+       probs and "13 item(s) where the run before it had 14" in probs[0], probs[:1])
+
+    grew = {"quarterly": [("2026-10-02T10:00:00Z", 40),
+                          ("2026-10-02T10:15:00Z", 43),
+                          ("2026-10-02T10:30:00Z", 43)]}
+    rep2, probs2 = analyse(series, P, now=now, targets=grew)
+    ok("C050c while a target universe that GREW is not flagged - the sweep's does "
+       "exactly that", rep2[0]["verdict"] == "complete" and not probs2, rep2[0])
+
+    rep3, probs3 = analyse(series, P, now=now)
+    ok("C050d and with no item data at all nothing changes",
+       rep3[0]["verdict"] == "complete" and not probs3, rep3[0]["verdict"])
+
+    known = {"quarterly|partial|2026-10-02T10:00:00Z|2026-10-02T10:15:00Z"}
+    rep4, probs4 = analyse(series, P, now=now, targets=dropped, known=known)
+    ok("C050e and an already-reported drop does not re-alert forever, the same rule "
+       "as a gap", not probs4 and rep4[0]["partial"][0]["already_reported"] is True,
+       rep4[0]["partial"])
+
+
 def c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored():
     """Written after the coverage check reported its own finding.
 
@@ -1160,7 +1204,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c046_many_assertions_checked_twice_is_one_moment_in_time,
             c047_concurrent_writers_lose_nothing,
             c048_an_instrument_must_not_be_blind_to_its_own_silence,
-            c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored]
+            c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored,
+            c050_a_run_can_succeed_and_still_cover_less]
 
 
 def main():

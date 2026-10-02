@@ -58,7 +58,8 @@ def stamp(cohort):
     return tail if ISO.match(tail) else None
 
 
-def analyse(series, periods=None, now=None, slack=SLACK, known=None):
+def analyse(series, periods=None, now=None, slack=SLACK, known=None,
+            targets=None):
     """Pure. series is {stratum: [iso timestamps]}; returns the report and problems.
 
     Kept free of the database and with an injectable clock so it can be controlled:
@@ -80,6 +81,7 @@ def analyse(series, periods=None, now=None, slack=SLACK, known=None):
     now = now or now_iso()
     now_e = _iso_to_epoch(now)
     known = set(known or ())
+    targets = targets or {}
     report, problems = [], []
 
     for stratum in sorted(periods):
@@ -119,8 +121,38 @@ def analyse(series, periods=None, now=None, slack=SLACK, known=None):
                                 % (stratum, g["missed"], g["from"], g["to"],
                                    g["minutes"], period // 60))
 
+        # DID THE RUN COVER EVERYTHING IT WAS SUPPOSED TO?
+        #
+        # A run can succeed, exit 0, stamp its beat and record a cohort while
+        # silently dropping half its items. Found on this estate: two panel runs
+        # recorded 13 targets where every other run recorded 14, because one item
+        # could not be measured, and NOTHING SAID SO - the heartbeat was green, the
+        # beat was stamped, and this file saw a cohort and called it complete.
+        #
+        # A DROP is the signal, not a difference: the sweep's target universe grows
+        # as new timers appear, so 40 then 43 is healthy. 14 then 13 is not.
+        tser = []
+        for item in (targets.get(stratum) or []):
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                tser.append((item[0], item[1]))
+        tser.sort()
+        entry["partial"] = []
+        for (a, na), (b, nb) in zip(tser, tser[1:]):
+            if nb < na:
+                entry["partial"].append({"from": a, "to": b, "was": na, "now": nb})
+        for p in entry["partial"]:
+            key = "%s|partial|%s|%s" % (stratum, p["from"], p["to"])
+            p["already_reported"] = key in known
+            if not p["already_reported"]:
+                problems.append("%s ran with %d item(s) where the run before it had "
+                                "%d - the run succeeded and silently covered less "
+                                "(%s -> %s)"
+                                % (stratum, p["now"], p["was"], p["from"], p["to"]))
+
         if entry["gaps"]:
             entry["verdict"] = "GAPS"
+        elif entry["partial"]:
+            entry["verdict"] = "PARTIAL"
         elif len(ts) < 2:
             entry["verdict"] = "NOT ENOUGH RUNS TO JUDGE YET"
         else:
@@ -147,16 +179,20 @@ def main():
         known = set()
 
     s = Store(args.db)
-    series = {}
+    series, targets = {}, {}
     for stratum in PERIODS:
-        # DISTINCT matters: without it this counts DECISIONS, not runs, and a
-        # stratum with 1634 decisions in 40 cohorts reports 1634 runs. The first
-        # rewrite of this file dropped it and did exactly that.
-        rows = s.db.execute("select distinct cohort from decisions where stratum=?",
-                            (stratum,)).fetchall()
+        # GROUP BY cohort, not DISTINCT: without the count this measured runs and
+        # not how much each run covered, and a stratum with 1634 decisions in 40
+        # cohorts reported 1634 runs. The first rewrite of this file did exactly
+        # that, and the item count is what catches a run that quietly covered less.
+        rows = s.db.execute(
+            "select cohort, count(distinct target) n from decisions "
+            "where stratum=? group by cohort", (stratum,)).fetchall()
         series[stratum] = [r["cohort"] for r in rows]
+        targets[stratum] = [(stamp(r["cohort"]), r["n"]) for r in rows
+                            if stamp(r["cohort"])]
 
-    report, problems = analyse(series, now=args.now, known=known)
+    report, problems = analyse(series, now=args.now, known=known, targets=targets)
     measured = sum(1 for r in report
                    if r["verdict"] in ("complete", "GAPS", "STALLED"))
 
@@ -165,6 +201,8 @@ def main():
     for r in report:
         for g in r.get("gaps", []):
             seen.add("%s|%s|%s" % (r["stratum"], g["from"], g["to"]))
+        for p in r.get("partial", []):
+            seen.add("%s|partial|%s|%s" % (r["stratum"], p["from"], p["to"]))
     if seen != known:
         tmp = args.state + ".tmp"
         try:
@@ -190,6 +228,11 @@ def main():
                 print("      MISSED %d: %s -> %s (%.1f min)%s"
                       % (g["missed"], g["from"], g["to"], g["minutes"],
                          "  [already reported]" if g.get("already_reported")
+                         else ""))
+            for p in r.get("partial", []):
+                print("      PARTIAL: %s had %d item(s), the run before it had %d%s"
+                      % (p["to"], p["now"], p["was"],
+                         "  [already reported]" if p.get("already_reported")
                          else ""))
         print()
         if problems:

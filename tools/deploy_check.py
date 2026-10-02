@@ -97,7 +97,7 @@ def process_check(root: str, manifest: dict, patterns):
                 newest, newest_rel = m, rel
     if not newest:
         return [], []
-    stale, fresh = [], []
+    stale, fresh, absent = [], [], []
     now = time.time()
     # EXCLUDE OURSELVES AND THE WHOLE CHAIN THAT SPAWNED US.
     #
@@ -134,12 +134,26 @@ def process_check(root: str, manifest: dict, patterns):
                                  text=True, timeout=20).stdout.split()
         except Exception:
             continue
+        live = []
         for pid in out:
             try:
-                if int(pid) in mine:
-                    continue
+                if int(pid) not in mine:
+                    live.append(pid)
             except ValueError:
                 continue
+        # A PATTERN THAT MATCHES NOTHING IS A FINDING, NOT A PASS.
+        #
+        # Measured 2026-10-02: asked about a process that did not exist, this reported
+        # "0 stale process(es) ... every checked process is running it" and exit 0 -
+        # asserting health about a process it had not found. The same script had, one
+        # round earlier, watched the real API get killed and would have said the same
+        # thing. Absent and healthy are not the same answer, and an absent long-lived
+        # service is precisely the condition this check exists to catch.
+        if not live:
+            absent.append({"pattern": pattern,
+                           "why": "no running process matches"})
+            continue
+        for pid in live:
             try:
                 et = subprocess.run(["ps", "-o", "etimes=", "-p", pid],
                                     capture_output=True, text=True,
@@ -152,7 +166,7 @@ def process_check(root: str, manifest: dict, patterns):
                      "newest_file": newest_rel,
                      "newest_age_s": round(now - newest)}
             (stale if started < newest else fresh).append(entry)
-    return stale, fresh
+    return stale, fresh, absent
 
 
 def check(root: str, manifest: dict):
@@ -199,9 +213,10 @@ def main() -> int:
         return 2
 
     in_sync, drifted, missing = check(args.root, manifest)
-    stale_procs, fresh_procs = ([], [])
+    stale_procs, fresh_procs, absent_procs = ([], [], [])
     if args.running:
-        stale_procs, fresh_procs = process_check(args.root, manifest, args.running)
+        stale_procs, fresh_procs, absent_procs = process_check(
+            args.root, manifest, args.running)
 
     if not args.quiet:
         for rel in in_sync:
@@ -215,13 +230,15 @@ def main() -> int:
         print("  STALE PROCESS  %s (pid %d) started %ds ago; %s changed %ds ago"
               % (p["pattern"], p["pid"], p["started_age_s"], p["newest_file"],
                  p["newest_age_s"]))
+    for p in absent_procs:
+        print("  NOT RUNNING    %s - %s" % (p["pattern"], p["why"]))
     for p in fresh_procs:
         print("  process ok     %s (pid %d)" % (p["pattern"], p["pid"]))
 
     print("=" * 62)
-    print("%d in sync, %d drifted, %d missing, of %d expected; %d stale process(es)"
+    print("%d in sync, %d drifted, %d missing, of %d expected; %d stale, %d absent"
           % (len(in_sync), len(drifted), len(missing), len(manifest),
-             len(stale_procs)))
+             len(stale_procs), len(absent_procs)))
     if drifted or missing:
         print("THE DEPLOYMENT IS NOT THE CODE THAT WAS TESTED. A passing test suite "
               "says nothing about what is running.")
@@ -230,6 +247,12 @@ def main() -> int:
         print("THE FILES ARE IN SYNC AND A LONG-LIVED PROCESS IS NOT. It loaded its "
               "code before these files changed, so what it serves is older than what "
               "was tested - and it will keep serving it until it is restarted.")
+        return 1
+    if absent_procs:
+        print("A PROCESS THIS CHECK WAS ASKED ABOUT IS NOT RUNNING. That is not a pass "
+              "and it is not a stale copy - there is no copy. An absent long-lived "
+              "service is exactly what this check exists to catch, and reporting "
+              "health about a process that was never found is how it would miss.")
         return 1
     print("the deployment matches the manifest"
           + (", and every checked process is running it" if args.running else ""))

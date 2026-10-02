@@ -680,6 +680,36 @@ def c035_two_forecasters_are_scored_on_the_same_items():
        [r["probability"] for r in rows if r["model"] == "base-rate"])
 
 
+def c040_a_headline_may_not_overstate_the_sample_it_rests_on():
+    """head_to_head said "Best Brier: persistence at 0.0244 over 40 resolved
+    decisions" while calibration() on the same rows reported those 80 decisions
+    came from 3 cohorts. The headline is what gets read; the caveat is what gets
+    scrolled past. So the caveat goes in the headline."""
+    from attest.decisions import now_iso
+    from attest.forecast import (Constant, Item, record_forecasts, resolve_due,
+                                  head_to_head)
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    items = [Item("t%d" % i, "q?", stratum="corr") for i in range(40)]
+    record_forecasts(ledger, items, [Constant(0.9, "good")], cohort="one",
+                     due_at=now_iso(60))
+    # A MIXED population on purpose: all-true would be degenerate and take the
+    # earlier branch of the verdict, which would test nothing about this rule.
+    truth = {"t%d" % i: (i % 2 == 0) for i in range(40)}
+    resolve_due(ledger,
+                lambda dec: (str(truth[dec["target"]]), truth[dec["target"]]),
+                now=now_iso(7200))
+    h = head_to_head(ledger, ["good"], stratum="corr")
+    v = h["verdict"]
+    ok("C040 a ranking built on one batch says so in the headline, not only in "
+       "the detail", "OPTIMISTIC" in v or "cohort" in v, v[:200])
+    ok("C040b and it reports the cohort count beside the decision count",
+       h["forecasters"][0]["cohorts"] == 1
+       and h["forecasters"][0]["resolved"] == 40, h["forecasters"][0])
+    ok("C040c with the effective sample spelled out",
+       "at most 1 independent observation" in v, v[:240])
+
+
 def c039_a_short_gap_is_not_reported_as_a_broken_resolver():
     """The detector caught itself crying wolf on the real estate.
 
@@ -785,7 +815,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c035_two_forecasters_are_scored_on_the_same_items,
             c036_an_open_forecast_is_not_a_correct_one,
             c038_the_recorded_answer_agrees_with_the_probability,
-            c039_a_short_gap_is_not_reported_as_a_broken_resolver]
+            c039_a_short_gap_is_not_reported_as_a_broken_resolver,
+            c040_a_headline_may_not_overstate_the_sample_it_rests_on]
 
 
 def main():

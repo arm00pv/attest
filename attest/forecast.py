@@ -291,6 +291,8 @@ def head_to_head(ledger, models: Sequence[str], stratum: Optional[str] = None,
         rows.append({
             "model": m,
             "resolved": cal["resolved"], "unresolved": cal["unresolved"],
+            "cohorts": cal.get("cohorts"),
+            "independence_warning": cal.get("independence_warning"),
             "hit_rate": (None if not pairs else round(called / len(pairs), 4)),
             "base_rate": base,
             "brier": (None if b is None else round(b, 4)),
@@ -313,5 +315,13 @@ def head_to_head(ledger, models: Sequence[str], stratum: Optional[str] = None,
         best = enough[0]
         verdict = ("Best Brier: %s at %s over %d resolved decisions."
                    % (best["model"], best["brier"], best["resolved"]))
+        # The headline must not be able to overstate. A resolved count is not a
+        # count of independent observations, and this verdict line is the thing
+        # that gets read while the caveat underneath it does not.
+        if best.get("independence_warning"):
+            verdict += (" BUT: %s" % best["independence_warning"])
+        if best.get("cohorts"):
+            verdict += (" Read %d as at most %d independent observation(s), not %d."
+                        % (best["resolved"], best["cohorts"], best["resolved"]))
     return {"ok": True, "stratum": stratum or "(all)", "min_n": min_n,
             "forecasters": rows, "verdict": verdict}

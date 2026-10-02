@@ -46,8 +46,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from attest import Store, DecisionLedger                                   # noqa: E402
 from attest.decisions import now_iso                                       # noqa: E402
-from attest.forecast import (BaseRate, Forecaster, Item, Persistence,      # noqa: E402
-                             record_forecasts, resolve_due, head_to_head)
+from attest.forecast import (BaseRate, Constant, Forecaster, Item,           # noqa: E402
+                             Persistence, record_forecasts, resolve_due,
+                             head_to_head)
 
 HISTORY_KEEP = 200
 
@@ -283,7 +284,14 @@ def run_once(ledger: DecisionLedger, panel: dict, args, history: dict) -> dict:
                   context="panel sample at " + now_iso(), stratum=args.stratum)
              for name in measurable]
 
-    forecasters = [BaseRate(history), Persistence(observed)]
+    # THE NULL CONTROL IS NOT OPTIONAL. Constant(0.5) has a Brier score of exactly
+    # 0.25 on any population whatsoever, because (0.5-1)^2 and (0.5-0)^2 are both
+    # 0.25. That makes it a fixed reference line that does not move when the estate
+    # does, and it is the number any real forecaster is measured against: worse than
+    # 0.25 means worse than knowing nothing at all. Without it in the population, a
+    # table of Brier scores is a set of numbers with no scale.
+    forecasters = [Constant(0.5, "null-0.50"), BaseRate(history),
+                   Persistence(observed)]
     model_stats = None
     if args.model and not args.no_model:
         mf = ModelForecaster(args.model_url, args.model, measurable, history,

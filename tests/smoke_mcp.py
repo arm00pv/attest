@@ -71,9 +71,20 @@ async def run():
 
                 tools = await session.list_tools()
                 names = sorted(t.name for t in tools.tools)
-                check("M1 the five operations are exposed as MCP tools",
-                      names == ["capabilities", "memcheck", "recall",
-                                "remember", "verify"], names)
+                # Checked against the MANIFEST, not against a hardcoded list. This
+                # list said "the five operations" long after there were eight,
+                # and it went unnoticed because without the MCP SDK installed the
+                # whole file reports UNMEASURED instead of failing - a suite that
+                # is skipped and a suite that passes look the same in a summary
+                # line. Deriving it means adding an operation without exposing it
+                # over MCP fails here, and exposing one the manifest does not
+                # declare fails here too.
+                import tempfile as _tf
+                from attest import Service as _Svc
+                _svc = _Svc(os.path.join(_tf.mkdtemp(prefix="attest_mcp_"), "m.db"))
+                expected = sorted(o["name"] for o in _svc.manifest()["operations"])
+                check("M1 every operation in the manifest is exposed as an MCP tool",
+                      names == expected, {"mcp": names, "manifest": expected})
 
                 desc = {t.name: (t.description or "") for t in tools.tools}
                 check("M2 the verify tool description states the rule, so a host "

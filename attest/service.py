@@ -1,4 +1,4 @@
-"""The operations. Five of them, and the last one exists to keep the service honest.
+"""The operations. Eleven of them, and the last four exist to keep the service honest.
 
     capabilities  what this machine can and cannot ACTUALLY check
     verify        put a claim against a real checker
@@ -433,10 +433,19 @@ class Service:
                             "probability": "REQUIRED for noul",
                             "confidence": "optional",
                             "state": "what it was decided from",
-                            "model": "which model answered", "who": "caller id"},
+                            "model": "which model answered", "who": "caller id",
+                            "due_at": "ISO8601 UTC, e.g. 2026-10-02T04:37:00Z. Supplying "
+                                      "this makes it a FORECAST: the decision is held "
+                                      "open until the world catches up, and a due_at "
+                                      "that has already passed is REFUSED.",
+                            "stratum": "which horizon this belongs to, so cadences are "
+                                       "never pooled",
+                            "cohort": "which batch, so correlated decisions are visible",
+                            "target": "what the question is about"},
                  "description": "Log a decision with the confidence it was made at. "
                                 "It stays UNRESOLVED, and out of every rate, until an "
-                                "outcome is recorded."},
+                                "outcome is recorded. With a due_at it is a forecast "
+                                "rather than a retrospective."},
                 {"name": "resolve_decision",
                  "endpoint": "/attest/v1/resolve_decision",
                  "params": {"id": "the decision id", "outcome": "what happened",
@@ -445,11 +454,34 @@ class Service:
                                 "can be revised after the fact is a retrospective, "
                                 "not a prediction."},
                 {"name": "calibration", "endpoint": "/attest/v1/calibration",
-                 "params": {"model": "optional, filter to one model"},
+                 "params": {"model": "optional, filter to one model",
+                            "stratum": "optional, filter to one horizon"},
                  "description": "How often was a decision taken at confidence p "
                                 "actually right? Per bucket, with a Wilson interval, "
                                 "and it refuses to report a rate below 30 resolved "
-                                "decisions."},
+                                "decisions. Broken out by stratum, because a decision "
+                                "settled in five minutes and one settled in three weeks "
+                                "are not the same measurement."},
+                {"name": "pending_decisions", "endpoint": "/attest/v1/pending_decisions",
+                 "params": {"model": "optional", "stratum": "optional"},
+                 "description": "What the ledger is still holding open, split into not "
+                                "yet knowable, just come due, knowable and STILL "
+                                "unrecorded, and never a forecast at all. The third is "
+                                "a broken resolver, and an estate that stops settling "
+                                "its own forecasts otherwise looks like one that simply "
+                                "stopped accumulating."},
+                {"name": "due_decisions", "endpoint": "/attest/v1/due_decisions",
+                 "params": {"model": "optional"},
+                 "description": "Open decisions whose outcome is knowable now and was "
+                                "not when they were made. A decision that never named a "
+                                "due_at is never selected: sweeping those up would turn "
+                                "'nobody ever checked' into a rate."},
+                {"name": "discriminability", "endpoint": "/attest/v1/discriminability",
+                 "params": {"model": "optional", "stratum": "optional"},
+                 "description": "Could this population of outcomes show skill at all? "
+                                "If nineteen outcomes in twenty are the same answer, a "
+                                "predictor that always gives that answer scores 95% and "
+                                "knows nothing. Ask this BEFORE quoting any rate."},
             ],
         }
 
@@ -470,16 +502,25 @@ class Service:
               "record_decision": lambda a: self.record_decision(
                   a.get("question", ""), a.get("answer", ""), a.get("qtype", "choice"),
                   a.get("probability"), a.get("confidence"), a.get("state", ""),
-                  a.get("model", ""), a.get("who") or "", a.get("alternatives")),
+                  a.get("model", ""), a.get("who") or "", a.get("alternatives"),
+                  a.get("due_at"), a.get("stratum", ""), a.get("cohort", ""),
+                  a.get("target", "")),
               "resolve_decision": lambda a: self.resolve_decision(
                   a.get("id", ""), a.get("outcome", ""), a.get("correct")),
-              "calibration": lambda a: self.calibration(a.get("model")),
+              "calibration": lambda a: self.calibration(a.get("model"),
+                                                         a.get("stratum")),
+              "pending_decisions": lambda a: self.pending_decisions(
+                  a.get("model"), a.get("stratum")),
+              "due_decisions": lambda a: self.due_decisions(a.get("model")),
+              "discriminability": lambda a: self.discriminability(
+                  a.get("model"), a.get("stratum")),
               }.get(name)
         if fn is None:
             return {"ok": False, "error": "unknown operation: %s" % name,
-                    "available": ["capabilities", "verify", "remember", "recall",
-                                  "memcheck", "record_decision",
-                                  "resolve_decision", "calibration"]}
+                    "available": sorted([
+                        "capabilities", "verify", "remember", "recall", "memcheck",
+                        "record_decision", "resolve_decision", "calibration",
+                        "pending_decisions", "due_decisions", "discriminability"])}
         t0 = time.time()
         try:
             with self._op_lock:

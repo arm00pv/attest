@@ -121,11 +121,35 @@ def build(svc: Optional[Service] = None, sdk_cls: Any = None):
         return svc.dispatch("resolve_decision", {"id": id, "outcome": outcome,
                                                  "correct": correct})
 
-    def calibration(model: str = "") -> Dict[str, Any]:
+    def calibration(model: str = "", stratum: str = "") -> Dict[str, Any]:
         """How often was a decision taken at confidence p actually right? Per
         bucket with a Wilson interval, refusing to report a rate below 30
-        resolved decisions - at 108 items a few points of difference is noise."""
-        return svc.dispatch("calibration", {"model": model or None})
+        resolved decisions - at 108 items a few points of difference is noise.
+        stratum separates horizons: five minutes and three weeks are not the
+        same measurement and are never pooled."""
+        return svc.dispatch("calibration", {"model": model or None,
+                                            "stratum": stratum or None})
+
+    def pending_decisions(model: str = "", stratum: str = "") -> Dict[str, Any]:
+        """What the ledger is still holding open, split into not-yet-knowable,
+        just-come-due, knowable and STILL unrecorded, and never-a-forecast. The
+        third is a broken resolver: an estate that stops settling its own
+        forecasts otherwise looks like one that simply stopped accumulating."""
+        return svc.dispatch("pending_decisions", {"model": model or None,
+                                                  "stratum": stratum or None})
+
+    def due_decisions(model: str = "") -> Dict[str, Any]:
+        """Open decisions whose outcome is knowable now and was not when they
+        were made. A decision that never named a due_at is never selected."""
+        return svc.dispatch("due_decisions", {"model": model or None})
+
+    def discriminability(model: str = "", stratum: str = "") -> Dict[str, Any]:
+        """Could this population of outcomes show skill at all? If nineteen
+        outcomes in twenty are the same answer, a predictor that always gives
+        that answer scores 95% and knows nothing. Ask this BEFORE quoting any
+        rate, and do not present one as skill when this says it cannot be."""
+        return svc.dispatch("discriminability", {"model": model or None,
+                                                 "stratum": stratum or None})
 
     _register(srv, "capabilities", capabilities)
     _register(srv, "verify", verify)
@@ -135,6 +159,9 @@ def build(svc: Optional[Service] = None, sdk_cls: Any = None):
     _register(srv, "record_decision", record_decision)
     _register(srv, "resolve_decision", resolve_decision)
     _register(srv, "calibration", calibration)
+    _register(srv, "pending_decisions", pending_decisions)
+    _register(srv, "due_decisions", due_decisions)
+    _register(srv, "discriminability", discriminability)
     srv._attest_sdk = where
     return srv
 

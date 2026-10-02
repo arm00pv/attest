@@ -201,6 +201,7 @@ class ModelForecaster(Forecaster):
         self.name = name or ("model:" + model)
         self._cache = None
         self.error = None
+        self.warning = None
 
     def _ask(self) -> dict:
         cur = {k: v for k, v in self.current.items() if v is not None}
@@ -208,7 +209,12 @@ class ModelForecaster(Forecaster):
         for k in cur:
             h = self.history.get(k) or []
             rates[k] = "%d/%d" % (sum(1 for x in h if x), len(h)) if h else "no history"
-        keys = ", ".join('"%s": 0.00' % k for k in cur)
+        # The example MUST NOT contain a number. An earlier version built this
+        # with '"%s": 0.00' for every key, and the model returned 0.0 for all
+        # fourteen items - including two that were provably true at that moment.
+        # It had been handed a template and it filled in the template. A
+        # placeholder cannot be mistaken for an answer.
+        keys = ", ".join('"%s": <probability>' % k for k in cur)
         prompt = PROMPT.format(mins=self.minutes, current=json.dumps(cur, indent=2),
                                rates=json.dumps(rates, indent=2),
                                keep=HISTORY_KEEP, keys=keys)
@@ -235,6 +241,13 @@ class ModelForecaster(Forecaster):
                     continue
         if not out:
             self.error = "model returned JSON with no usable probabilities"
+        elif len(out) >= 4 and len(set(out.values())) == 1:
+            # Recorded, not suppressed: the model really did say this. But a
+            # single probability repeated across a whole panel is an echo, not a
+            # forecast, and it should never be read as one.
+            self.warning = ("model gave the same probability (%.3f) for all %d "
+                            "items - an echo, not a forecast"
+                            % (list(out.values())[0], len(out)))
         return out
 
     def predict(self, item: Item, history=None):
@@ -286,6 +299,7 @@ def run_once(ledger: DecisionLedger, panel: dict, args, history: dict) -> dict:
 
     if model_stats is not None:
         written["model_error"] = model_stats.error
+        written["model_warning"] = model_stats.warning
         written["model_answered"] = len(model_stats._cache or {})
 
     save_history(args.history, observed, history)
@@ -349,6 +363,8 @@ def main() -> int:
             print("refused %d" % len(out["written"]["refused"]))
         if out["written"].get("model_error"):
             print("model did not answer: %s" % out["written"]["model_error"])
+        if out["written"].get("model_warning"):
+            print("model WARNING: %s" % out["written"]["model_warning"])
     return 0
 
 

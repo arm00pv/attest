@@ -41,6 +41,17 @@ def _iso_to_epoch(ts: str) -> float:
     return calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
 
 
+def _iso_to_epoch_shift(base: str, offset_s: float) -> str:
+    """Shift a ledger timestamp by a number of seconds.
+
+    Separate from now_iso() so that the clock used for scoring can be injected:
+    a test that has to wait an hour to reach the grace window will not be run,
+    and a control that is not run is not a control.
+    """
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                         time.gmtime(_iso_to_epoch(base) + offset_s))
+
+
 def now_iso(offset_s: float = 0.0) -> str:
     """UTC timestamp in the one format this ledger uses everywhere.
 
@@ -49,6 +60,13 @@ def now_iso(offset_s: float = 0.0) -> str:
     """
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + offset_s))
 
+
+# How long a forecast may sit past its due time before that counts as a broken
+# resolver rather than an ordinary gap. A decision that came due seconds ago at a
+# fifteen-minute cadence has not been missed by anybody; calling it a fault is the
+# same cry-wolf that trains a reader to ignore the channel, and then the one that
+# matters is ignored with it.
+OVERDUE_GRACE_S = 3600.0
 
 # Below this many resolved decisions, no rate is reported at all. Chosen from
 # the measurement above: 108 items could not separate 0.066 from 0.061.
@@ -241,7 +259,8 @@ class DecisionLedger:
 
     # ------------------------------------------------------------- calibration
     def calibration(self, model: Optional[str] = None,
-                    stratum: Optional[str] = None) -> Dict[str, Any]:
+                    stratum: Optional[str] = None,
+                    now: Optional[str] = None) -> Dict[str, Any]:
         """How often was a decision taken at confidence p actually right?
 
         Per bucket, with an interval, and it refuses to be a number when there
@@ -278,9 +297,16 @@ class DecisionLedger:
             oargs.append(stratum)
         open_rows = self.db.execute(
             "SELECT due_at FROM decisions WHERE " + ow, tuple(oargs)).fetchall()
-        now = now_iso()
+        now = now or now_iso()
+        grace_edge = _iso_to_epoch_shift(now, -OVERDUE_GRACE_S)
         awaiting = sum(1 for r in open_rows if r["due_at"] and r["due_at"] > now)
-        missed_due = sum(1 for r in open_rows if r["due_at"] and r["due_at"] <= now)
+        # Due within the grace window is an ordinary gap, not a fault: the next
+        # run will settle it. Only past the grace is it evidence that the resolver
+        # has stopped working.
+        just_due = sum(1 for r in open_rows
+                       if r["due_at"] and grace_edge < r["due_at"] <= now)
+        missed_due = sum(1 for r in open_rows
+                          if r["due_at"] and r["due_at"] <= grace_edge)
         never_forecast = sum(1 for r in open_rows if not r["due_at"])
         unresolved = len(open_rows)
         total = unresolved + len(rows)
@@ -339,12 +365,14 @@ class DecisionLedger:
             overall += (" %d decision(s) are UNRESOLVED and are excluded from every "
                         "rate above - an unsettled decision is not a correct one."
                         % unresolved)
-            overall += (" Of those: %d not yet knowable, %d knowable and STILL "
-                        "unrecorded, %d with no due_at at all (never a forecast)."
-                        % (awaiting, missed_due, never_forecast))
+            overall += (" Of those: %d not yet knowable, %d just due and not yet "
+                        "past the %ds grace, %d knowable and STILL unrecorded, %d "
+                        "with no due_at at all (never a forecast)."
+                        % (awaiting, just_due, int(OVERDUE_GRACE_S), missed_due,
+                           never_forecast))
         if missed_due:
-            overall += (" A knowable outcome that was never written down is a "
-                        "broken resolver, not a slow one.")
+            overall += (" A knowable outcome left unrecorded past the grace window "
+                        "is a broken resolver, not a slow one.")
 
         # Per-stratum, so a horizon cannot hide inside a pooled average.
         strata: Dict[str, Dict[str, Any]] = {}
@@ -392,8 +420,10 @@ class DecisionLedger:
                 "recorded": total, "resolved": resolved, "unresolved": unresolved,
                 "cohorts": cohorts, "per_cohort": per_cohort,
                 "independence_warning": independence,
-                "open": {"awaiting_outcome": awaiting, "due_but_unrecorded": missed_due,
-                         "never_a_forecast": never_forecast},
+                "open": {"awaiting_outcome": awaiting, "due_just_now": just_due,
+                         "due_but_unrecorded": missed_due,
+                         "never_a_forecast": never_forecast,
+                         "grace_seconds": int(OVERDUE_GRACE_S)},
                 "min_n": MIN_N, "buckets": out_buckets, "by_stratum": by_stratum,
                 "pooled_warning": pooled_warning, "verdict": overall}
 

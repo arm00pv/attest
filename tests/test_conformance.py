@@ -638,15 +638,20 @@ def c034_a_forecast_nobody_settled_is_a_broken_resolver():
                   due_at=now_iso(3600))                                        # simply early
     ledger.record("q", "true", qtype="noul", probability=0.5, due_at=now_iso(1))
     time.sleep(1.4)
+    from attest.decisions import OVERDUE_GRACE_S
     open_ = ledger.calibration()["open"]
-    ok("C034 the ledger separates 'not knowable yet' from 'knowable and never "
-       "written down' from 'was never a forecast'",
-       open_["awaiting_outcome"] == 1 and open_["due_but_unrecorded"] == 1
+    ok("C034 the ledger separates 'not knowable yet' from 'just come due' from "
+       "'was never a forecast'",
+       open_["awaiting_outcome"] == 1 and open_["due_just_now"] == 1
        and open_["never_a_forecast"] == 1, open_)
-    ok("C034b and calls a knowable outcome nobody recorded a broken resolver, "
-       "not a slow one",
-       "broken resolver" in ledger.calibration()["verdict"],
-       ledger.calibration()["verdict"])
+    past = ledger.calibration(now=now_iso(OVERDUE_GRACE_S + 120))["open"]
+    # Winding the clock forward also moves the other decision into the just-due
+    # window, which is correct. The claim being tested is narrower: the SAME
+    # decision was not a fault at 07:04 and is a fault an hour later.
+    ok("C034b and the same decision becomes a broken resolver an hour later, "
+       "having not been one before",
+       open_["due_but_unrecorded"] == 0 and past["due_but_unrecorded"] == 1,
+       {"before": open_, "after": past})
     # Timestamps are whole seconds, so a 1.4s wait can round to zero elapsed.
     # Move the clock instead of racing it, and check the arithmetic directly.
     ov = ledger.overdue_seconds(now=now_iso(3600))
@@ -673,6 +678,30 @@ def c035_two_forecasters_are_scored_on_the_same_items():
        "of certainty",
        all(r["probability"] < 1.0 for r in rows if r["model"] == "base-rate"),
        [r["probability"] for r in rows if r["model"] == "base-rate"])
+
+
+def c039_a_short_gap_is_not_reported_as_a_broken_resolver():
+    """The detector caught itself crying wolf on the real estate.
+
+    Two forecasts came due at 06:58:31 and the ledger called them a broken
+    resolver at 07:03, because the item they were about happened to be
+    unmeasurable in that one sample. Five minutes late at a fifteen-minute
+    cadence is not a fault, and a detector that says it is trains the reader to
+    ignore the channel - after which the real one is ignored too."""
+    from attest.decisions import now_iso, OVERDUE_GRACE_S
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    ledger.record("q", "true", qtype="noul", probability=0.5, due_at=now_iso(1))
+    time.sleep(1.4)
+    open_ = ledger.calibration()["open"]
+    ok("C039 a forecast that came due moments ago is NOT a broken resolver",
+       open_["due_but_unrecorded"] == 0 and open_["due_just_now"] == 1, open_)
+    ok("C039b and the grace window is reported rather than left implicit",
+       open_["grace_seconds"] == int(OVERDUE_GRACE_S), open_)
+    # Wind the clock past the grace window: now the same decision IS a fault.
+    past = ledger.calibration(now=now_iso(OVERDUE_GRACE_S + 60))["open"]
+    ok("C039c but one left unrecorded past the grace window still is",
+       past["due_but_unrecorded"] == 1 and past["due_just_now"] == 0, past)
 
 
 def c038_the_recorded_answer_agrees_with_the_probability():
@@ -755,7 +784,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c034_a_forecast_nobody_settled_is_a_broken_resolver,
             c035_two_forecasters_are_scored_on_the_same_items,
             c036_an_open_forecast_is_not_a_correct_one,
-            c038_the_recorded_answer_agrees_with_the_probability]
+            c038_the_recorded_answer_agrees_with_the_probability,
+            c039_a_short_gap_is_not_reported_as_a_broken_resolver]
 
 
 def main():

@@ -675,6 +675,31 @@ def c035_two_forecasters_are_scored_on_the_same_items():
        [r["probability"] for r in rows if r["model"] == "base-rate"])
 
 
+def c038_the_recorded_answer_agrees_with_the_probability():
+    """A row that answers "true" while carrying p=0.005 asserts a proposition and
+    denies it in the same breath. Nothing downstream reads the answer field, which
+    is exactly why nobody would notice - and why a table full of them would still
+    look like evidence."""
+    from attest.decisions import now_iso
+    from attest.forecast import Constant, Item, record_forecasts
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    items = [Item("t%d" % i, "q?") for i in range(6)]
+    record_forecasts(ledger, items, [Constant(0.05, "low"), Constant(0.95, "high")],
+                     cohort="ans", due_at=now_iso(600))
+    rows = ledger.pending()
+    low = [r for r in rows if r["model"] == "low"]
+    high = [r for r in rows if r["model"] == "high"]
+    ok("C038 a forecaster at 0.05 records its answer as false, not true",
+       low and all(r["answer"] == "false" for r in low),
+       [(r["answer"], r["probability"]) for r in low])
+    ok("C038b and one at 0.95 records true",
+       high and all(r["answer"] == "true" for r in high),
+       [(r["answer"], r["probability"]) for r in high])
+    ok("C038c so the answer never contradicts the probability on the same row",
+       all((r["answer"] == "true") == (r["probability"] >= 0.5) for r in rows), rows)
+
+
 def c036_an_open_forecast_is_not_a_correct_one():
     from attest.decisions import now_iso
     from attest.forecast import Constant, Item, record_forecasts
@@ -729,7 +754,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c033_many_samples_in_one_cohort_are_not_many_observations,
             c034_a_forecast_nobody_settled_is_a_broken_resolver,
             c035_two_forecasters_are_scored_on_the_same_items,
-            c036_an_open_forecast_is_not_a_correct_one]
+            c036_an_open_forecast_is_not_a_correct_one,
+            c038_the_recorded_answer_agrees_with_the_probability]
 
 
 def main():

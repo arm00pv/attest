@@ -177,8 +177,13 @@ def record_forecasts(ledger, items: Sequence[Item], forecasters: Sequence[Foreca
                                 "why": "no opinion offered"})
                 continue
             p = min(1.0, max(0.0, float(p)))
+            # The answer must be the point prediction the probability implies. A
+            # row that answers "true" while carrying p=0.005 asserts a proposition
+            # and denies it in the same breath, and a table of those is not
+            # evidence of anything.
             r = ledger.record(
-                question=item.question, answer="true", qtype="noul",
+                question=item.question,
+                answer="true" if p >= 0.5 else "false", qtype="noul",
                 probability=p, confidence=p, state=item.context,
                 model=f.name, who=who, alternatives=item.alternatives,
                 due_at=due_at, stratum=item.stratum, cohort=cohort,
@@ -275,14 +280,19 @@ def head_to_head(ledger, models: Sequence[str], stratum: Optional[str] = None,
         dis = ledger.discriminability(model=m, stratum=stratum)
         pairs = ledger.pairs(model=m, stratum=stratum)
         b = brier(pairs)
+        # The forecaster's own hit rate on its thresholded prediction. This is not
+        # the base rate: an earlier version of this line reported the fraction of
+        # propositions that were true and called it accuracy, which is a different
+        # number that happens to look right on a balanced population.
+        called = sum(1 for p, y in pairs if (1 if p >= 0.5 else 0) == y)
         base = dis.get("base_rate")
         ref = None if base is None else sum(
             (float(base) - y) ** 2 for _p, y in pairs) / len(pairs) if pairs else None
         rows.append({
             "model": m,
             "resolved": cal["resolved"], "unresolved": cal["unresolved"],
-            "accuracy": (None if not cal["resolved"]
-                         else round(sum(1 for _p, y in pairs if y) / len(pairs), 4)),
+            "hit_rate": (None if not pairs else round(called / len(pairs), 4)),
+            "base_rate": base,
             "brier": (None if b is None else round(b, 4)),
             "brier_of_base_rate": (None if ref is None else round(ref, 4)),
             "skill_vs_base_rate": (None if (b is None or not ref)

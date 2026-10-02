@@ -52,6 +52,23 @@ CREATE TABLE IF NOT EXISTS ledger (
     event       TEXT NOT NULL,
     detail      TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS decisions (
+    id           TEXT PRIMARY KEY,
+    at           TEXT NOT NULL,
+    who          TEXT NOT NULL DEFAULT '',
+    model        TEXT NOT NULL DEFAULT '',
+    state        TEXT NOT NULL DEFAULT '',
+    question     TEXT NOT NULL DEFAULT '',
+    qtype        TEXT NOT NULL CHECK (qtype IN ('choice', 'noul', 'score')),
+    answer       TEXT NOT NULL DEFAULT '',
+    probability  REAL,
+    confidence   REAL,
+    alternatives TEXT NOT NULL DEFAULT '{}',
+    outcome      TEXT,
+    correct      INTEGER CHECK (correct IN (0, 1) OR correct IS NULL),
+    resolved_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS decisions_resolved ON decisions(correct);
 """
 
 TIER_VERIFIED = "verified"

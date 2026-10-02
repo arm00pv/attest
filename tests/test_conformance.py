@@ -326,6 +326,92 @@ def c018_missing_dependency_is_not_a_disproof():
        "MISSING DEPENDENCY" in v.reason and "remedy" in v.detail, v.detail)
 
 
+def c019_a_judgment_with_no_confidence_is_refused():
+    """A boolean with no probability attached is the unmeasured claim this
+    ledger exists to catch, so it must not be storable."""
+    svc, d = tmp_service()
+    r = svc.record_decision("is the door locked?", "yes", qtype="noul")
+    ok("C019 a noul decision with no probability is REFUSED",
+       r.get("ok") is False and "probability" in r.get("error", ""), r)
+    r2 = svc.record_decision("is the door locked?", "yes", qtype="noul",
+                             probability=0.8)
+    ok("C019b with a probability it is accepted", r2.get("ok") is True, r2)
+
+
+def c020_an_unresolved_decision_is_not_a_correct_one():
+    """ANTI-BLINDNESS for the ledger. A decision nobody ever settled must not
+    inflate a hit rate. It is the same lie as a checker that never ran."""
+    svc, d = tmp_service()
+    for _ in range(40):
+        svc.record_decision("q", "a", qtype="noul", probability=0.9)
+    one = svc.record_decision("q", "a", qtype="noul", probability=0.9)["id"]
+    svc.resolve_decision(one, "it turned out right", True)
+    cal = svc.calibration()
+    ok("C020 the ledger reports 40 unresolved and 1 resolved, not 41 correct",
+       cal["unresolved"] == 40 and cal["resolved"] == 1,
+       {"unresolved": cal["unresolved"], "resolved": cal["resolved"]})
+    ok("C020b and claims no rate from a single observation",
+       "INSUFFICIENT DATA" in cal["verdict"], cal["verdict"])
+
+
+def c021_a_decision_is_settled_once():
+    svc, d = tmp_service()
+    did = svc.record_decision("q", "a", qtype="noul", probability=0.5)["id"]
+    ok("C021 the first resolution is accepted",
+       svc.resolve_decision(did, "yes", True).get("ok") is True)
+    r = svc.resolve_decision(did, "actually no", False)
+    ok("C021b a second resolution is REFUSED - a prediction may not be revised "
+       "after the fact", r.get("ok") is False, r)
+
+
+def c022_an_unknown_outcome_stays_unresolved():
+    svc, d = tmp_service()
+    did = svc.record_decision("q", "a", qtype="noul", probability=0.5)["id"]
+    r = svc.resolve_decision(did, "nobody ever checked")
+    ok("C022 resolving without saying whether it was right is refused",
+       r.get("ok") is False, r)
+    ok("C022b so it stays unresolved rather than being counted either way",
+       svc.calibration()["unresolved"] == 1, svc.calibration())
+
+
+def c023_overconfidence_is_detected_and_only_then():
+    """The negative control for the ledger. If this cannot fire, the whole
+    apparatus is decoration."""
+    svc, d = tmp_service()
+    for i in range(40):
+        did = svc.record_decision("q", "a", qtype="noul", probability=0.95)["id"]
+        svc.resolve_decision(did, "outcome", i % 2 == 0)   # right ~50% at 0.95
+    cal = svc.calibration()
+    b = [x for x in cal["buckets"] if x["bucket"].startswith("0.95")]
+    ok("C023 a bucket claiming 0.95 and right half the time is OVERCONFIDENT",
+       bool(b) and b[0]["verdict"] == "OVERCONFIDENT", b)
+    ok("C023b and it reports the interval rather than a bare point estimate",
+       bool(b) and b[0]["interval"] is not None
+       and b[0]["interval"][0] < b[0]["observed_rate"], b)
+
+
+def c024_a_well_calibrated_bucket_is_not_called_overconfident():
+    """The other half of C023. A detector that calls everything overconfident is
+    as useless as one that calls nothing."""
+    svc, d = tmp_service()
+    for i in range(100):
+        did = svc.record_decision("q", "a", qtype="noul", probability=0.8)["id"]
+        svc.resolve_decision(did, "outcome", i % 10 < 8)   # exactly 80%
+    cal = svc.calibration()
+    b = [x for x in cal["buckets"] if x["bucket"].startswith("0.70")]
+    ok("C024 a bucket claiming 0.80 and right 80% of the time is consistent",
+       bool(b) and b[0]["verdict"] == "consistent with its claim", b)
+
+
+def c025_wilson_brackets_the_estimate():
+    from attest.decisions import wilson
+    lo, hi = wilson(50, 100)
+    ok("C025 the interval brackets the point estimate", lo < 0.5 < hi, (lo, hi))
+    lo2, hi2 = wilson(5, 10)
+    ok("C025b and it is WIDER on fewer samples - the entire reason it is here",
+       (hi2 - lo2) > (hi - lo), ((lo, hi), (lo2, hi2)))
+
+
 CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c002_anti_blindness_timeout_is_unknown,
             c003_a_real_failure_is_disputed,
@@ -343,7 +429,14 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c015_graph_absence_is_unknown_and_contradiction_is_disputed,
             c016_memcheck_never_claims_health_from_silence,
             c017_warm_actually_waits,
-            c018_missing_dependency_is_not_a_disproof]
+            c018_missing_dependency_is_not_a_disproof,
+            c019_a_judgment_with_no_confidence_is_refused,
+            c020_an_unresolved_decision_is_not_a_correct_one,
+            c021_a_decision_is_settled_once,
+            c022_an_unknown_outcome_stays_unresolved,
+            c023_overconfidence_is_detected_and_only_then,
+            c024_a_well_calibrated_bucket_is_not_called_overconfident,
+            c025_wilson_brackets_the_estimate]
 
 
 def main():

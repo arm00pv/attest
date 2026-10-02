@@ -102,11 +102,39 @@ def build(svc: Optional[Service] = None, sdk_cls: Any = None):
         memory is failing, every verdict here is suspect."""
         return svc.dispatch("memcheck", {"gb": gb, "passes": passes})
 
+    def record_decision(question: str, answer: str, qtype: str = "choice",
+                        probability: float = -1.0, confidence: float = -1.0,
+                        state: str = "", model: str = "",
+                        who: str = "mcp-client") -> Dict[str, Any]:
+        """Log a decision WITH the confidence it was made at. probability is
+        REQUIRED for a noul judgment. It stays UNRESOLVED, and out of every rate,
+        until an outcome is recorded - an unsettled decision is not a correct one."""
+        return svc.dispatch("record_decision", {
+            "question": question, "answer": answer, "qtype": qtype,
+            "probability": None if probability < 0 else probability,
+            "confidence": None if confidence < 0 else confidence,
+            "state": state, "model": model, "who": who})
+
+    def resolve_decision(id: str, outcome: str, correct: bool) -> Dict[str, Any]:
+        """Record what actually happened, ONCE. 'I do not know how it turned out'
+        is not an outcome; leave it unresolved instead."""
+        return svc.dispatch("resolve_decision", {"id": id, "outcome": outcome,
+                                                 "correct": correct})
+
+    def calibration(model: str = "") -> Dict[str, Any]:
+        """How often was a decision taken at confidence p actually right? Per
+        bucket with a Wilson interval, refusing to report a rate below 30
+        resolved decisions - at 108 items a few points of difference is noise."""
+        return svc.dispatch("calibration", {"model": model or None})
+
     _register(srv, "capabilities", capabilities)
     _register(srv, "verify", verify)
     _register(srv, "remember", remember)
     _register(srv, "recall", recall)
     _register(srv, "memcheck", memcheck)
+    _register(srv, "record_decision", record_decision)
+    _register(srv, "resolve_decision", resolve_decision)
+    _register(srv, "calibration", calibration)
     srv._attest_sdk = where
     return srv
 

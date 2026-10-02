@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from . import checkers
 from .checkers import GraphChecker
+from .decisions import DecisionLedger
 from .store import Store, TIER_ASSERTED, TIER_VERIFIED
 from .verdict import Verdict
 
@@ -38,6 +39,10 @@ class Service:
     def __init__(self, db_path: Optional[str] = None):
         self.store = Store(db_path)
         self.graph = GraphChecker(self.store)
+        # Named 'decisions', not 'ledger': the store already has a ledger() event
+        # log, and two different things called ledger in one object is how you
+        # write to the wrong one for a month without noticing.
+        self.decisions = DecisionLedger(self.store)
         self._caps: Dict[str, Any] = {"data": None, "at": 0.0, "refreshing": False}
         self._lock = threading.Lock()
         self._op_lock = threading.Lock()
@@ -309,6 +314,46 @@ class Service:
         finally:
             del buf, cache
 
+    # --------------------------------------------------------------- decisions
+    def record_decision(self, question: str, answer: str, qtype: str = "choice",
+                        probability: Optional[float] = None,
+                        confidence: Optional[float] = None, state: str = "",
+                        model: str = "", who: str = "",
+                        alternatives: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Log one decision WITH the confidence it was made at.
+
+        A noul judgment with no probability is refused: a boolean with no
+        confidence attached is precisely the unmeasured claim this ledger exists
+        to catch. It is UNRESOLVED until an outcome is recorded, and an
+        unresolved decision is excluded from every rate. Silence is not success.
+        """
+        return self.decisions.record(question, answer, qtype=qtype,
+                                     probability=probability,
+                                     confidence=confidence, state=state,
+                                     model=model, who=who,
+                                     alternatives=alternatives)
+
+    def resolve_decision(self, decision_id: str, outcome: str = "",
+                         correct: Optional[bool] = None) -> Dict[str, Any]:
+        """Record what actually happened, once.
+
+        'I do not know how it turned out' is not an outcome. It leaves the
+        decision unresolved, which is a different and honest state. And a
+        decision that can be quietly revised after the fact is not a prediction,
+        so this refuses to resolve one twice.
+        """
+        return self.decisions.resolve(decision_id, outcome, correct)
+
+    def calibration(self, model: Optional[str] = None) -> Dict[str, Any]:
+        """How often was a decision taken at confidence p actually right?
+
+        Reported per bucket with a Wilson interval, and it REFUSES to report a
+        rate below MIN_N resolved decisions. Measured September 2026: 108 items
+        could not separate a calibration error of 0.066 from 0.061, so printing a
+        rate below a few dozen decisions is printing noise with a decimal point.
+        """
+        return self.decisions.calibration(model)
+
     # ---------------------------------------------------------------- manifest
     def manifest(self) -> Dict[str, Any]:
         return {
@@ -343,6 +388,30 @@ class Service:
                  "description": "Test this machine's RAM for reproducible bit "
                                 "errors. If it is failing, every verdict here is "
                                 "suspect."},
+                {"name": "record_decision",
+                 "endpoint": "/attest/v1/record_decision",
+                 "params": {"question": "what was decided", "answer": "what was chosen",
+                            "qtype": "choice|noul|score",
+                            "probability": "REQUIRED for noul",
+                            "confidence": "optional",
+                            "state": "what it was decided from",
+                            "model": "which model answered", "who": "caller id"},
+                 "description": "Log a decision with the confidence it was made at. "
+                                "It stays UNRESOLVED, and out of every rate, until an "
+                                "outcome is recorded."},
+                {"name": "resolve_decision",
+                 "endpoint": "/attest/v1/resolve_decision",
+                 "params": {"id": "the decision id", "outcome": "what happened",
+                            "correct": "true or false - unknown is not an outcome"},
+                 "description": "Record what actually happened, once. A decision that "
+                                "can be revised after the fact is a retrospective, "
+                                "not a prediction."},
+                {"name": "calibration", "endpoint": "/attest/v1/calibration",
+                 "params": {"model": "optional, filter to one model"},
+                 "description": "How often was a decision taken at confidence p "
+                                "actually right? Per bucket, with a Wilson interval, "
+                                "and it refuses to report a rate below 30 resolved "
+                                "decisions."},
             ],
         }
 
@@ -360,11 +429,19 @@ class Service:
                                               a.get("limit", 5),
                                               a.get("only_verified", False)),
               "memcheck": lambda a: self.memcheck(a.get("gb", 2), a.get("passes", 2)),
+              "record_decision": lambda a: self.record_decision(
+                  a.get("question", ""), a.get("answer", ""), a.get("qtype", "choice"),
+                  a.get("probability"), a.get("confidence"), a.get("state", ""),
+                  a.get("model", ""), a.get("who") or "", a.get("alternatives")),
+              "resolve_decision": lambda a: self.resolve_decision(
+                  a.get("id", ""), a.get("outcome", ""), a.get("correct")),
+              "calibration": lambda a: self.calibration(a.get("model")),
               }.get(name)
         if fn is None:
             return {"ok": False, "error": "unknown operation: %s" % name,
                     "available": ["capabilities", "verify", "remember", "recall",
-                                  "memcheck"]}
+                                  "memcheck", "record_decision",
+                                  "resolve_decision", "calibration"]}
         t0 = time.time()
         try:
             with self._op_lock:

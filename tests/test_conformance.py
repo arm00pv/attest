@@ -724,6 +724,48 @@ def c044_a_host_without_evidence_is_excluded_not_ranked_last():
        r2["verdict"][:120])
 
 
+def c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored():
+    """Written after the coverage check reported its own finding.
+
+    A gap is permanent - the 15:00 panel gap of 2026-10-02 is still in the ledger a
+    year later. The first version failed on any gap it found, so it exited 1 forever,
+    job_liveness reported "its last run exited 1" forever, and the notification fired
+    every six hours about something already fixed. Found by running job_liveness and
+    seeing the coverage job itself in the findings:
+
+        crontab:zixen15 [20 */6 * * * zixen15]  failed  its last run exited 1
+
+    A STALL is different and must never be suppressed: it is true right now."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from fleet_coverage import analyse
+    P = {"quarterly": 900}
+    gappy = {"quarterly": ["2026-10-02T10:00:00Z", "2026-10-02T10:15:00Z",
+                           "2026-10-02T10:45:00Z"]}
+
+    _r, first = analyse(gappy, P, now="2026-10-02T10:50:00Z")
+    ok("C049 a gap fails the check the first time it is seen", len(first) == 1, first)
+
+    known = {"quarterly|2026-10-02T10:15:00Z|2026-10-02T10:45:00Z"}
+    rep, again = analyse(gappy, P, now="2026-10-02T10:50:00Z", known=known)
+    ok("C049b and does NOT fail again on every subsequent run, forever",
+       again == [], again)
+    ok("C049c while still appearing in the report, marked as already reported",
+       rep[0]["gaps"][0].get("already_reported") is True, rep[0]["gaps"])
+
+    stalled = {"quarterly": ["2026-10-02T08:00:00Z"]}
+    srep, sprob = analyse(stalled, P, now="2026-10-02T12:00:00Z", known=known)
+    ok("C049d but a STALL is never suppressed - it is true now, not a mark in the "
+       "past", srep[0]["verdict"] == "STALLED" and len(sprob) == 1, sprob)
+
+    # A NEW gap on top of a known one must still be caught.
+    two = {"quarterly": ["2026-10-02T10:00:00Z", "2026-10-02T10:15:00Z",
+                         "2026-10-02T10:45:00Z", "2026-10-02T11:00:00Z",
+                         "2026-10-02T11:45:00Z"]}
+    _r2, fresh = analyse(two, P, now="2026-10-02T11:50:00Z", known=known)
+    ok("C049e a second, different gap is still reported",
+       len(fresh) == 1 and "11:00:00Z -> 2026-10-02T11:45:00Z" in fresh[0], fresh)
+
+
 def c048_an_instrument_must_not_be_blind_to_its_own_silence():
     """The coverage check compares consecutive cohorts, so it can only see a gap
     BETWEEN two runs. A stratum that stops entirely writes no further cohorts, so
@@ -1117,7 +1159,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c045_a_perfect_record_does_not_buy_certainty,
             c046_many_assertions_checked_twice_is_one_moment_in_time,
             c047_concurrent_writers_lose_nothing,
-            c048_an_instrument_must_not_be_blind_to_its_own_silence]
+            c048_an_instrument_must_not_be_blind_to_its_own_silence,
+            c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored]
 
 
 def main():

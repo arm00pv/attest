@@ -58,16 +58,28 @@ def stamp(cohort):
     return tail if ISO.match(tail) else None
 
 
-def analyse(series, periods=None, now=None, slack=SLACK):
+def analyse(series, periods=None, now=None, slack=SLACK, known=None):
     """Pure. series is {stratum: [iso timestamps]}; returns the report and problems.
 
     Kept free of the database and with an injectable clock so it can be controlled:
     a check that can only be exercised by waiting for a real job to die is not a
     check anybody will ever run.
+
+    A GAP ALREADY REPORTED IS NOT REPORTED AGAIN. The first version failed on any
+    gap it found, and a gap is permanent: the 15:00 panel gap of 2026-10-02 will
+    still be in the ledger next year. So the check exited 1 forever, job_liveness
+    reported "its last run exited 1" forever, and the notification fired every six
+    hours about something already fixed. That is the cry-wolf this estate has
+    already written an addendum about - a detector that trains its reader to ignore
+    it, after which the real one is ignored too.
+
+    A STALL is different and always fails: it is a condition that is true right
+    now, not a mark left in the past.
     """
     periods = PERIODS if periods is None else periods
     now = now or now_iso()
     now_e = _iso_to_epoch(now)
+    known = set(known or ())
     report, problems = [], []
 
     for stratum in sorted(periods):
@@ -99,10 +111,13 @@ def analyse(series, periods=None, now=None, slack=SLACK):
                                       "minutes": round(d / 60.0, 1),
                                       "missed": int(round(d / period)) - 1})
         for g in entry["gaps"]:
-            problems.append("%s missed %d run(s): %s -> %s (%.1f min against a "
-                            "%d-minute period)"
-                            % (stratum, g["missed"], g["from"], g["to"],
-                               g["minutes"], period // 60))
+            key = "%s|%s|%s" % (stratum, g["from"], g["to"])
+            g["already_reported"] = key in known
+            if not g["already_reported"]:
+                problems.append("%s missed %d run(s): %s -> %s (%.1f min against a "
+                                "%d-minute period)"
+                                % (stratum, g["missed"], g["from"], g["to"],
+                                   g["minutes"], period // 60))
 
         if entry["gaps"]:
             entry["verdict"] = "GAPS"
@@ -119,8 +134,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=DB)
     ap.add_argument("--now", default=None, help="override the clock (testing)")
+    ap.add_argument("--state", default=os.path.join(
+        os.path.expanduser("~"), ".omni_brain", "fleet_coverage_seen.json"),
+        help="gaps already reported, so they are not re-alerted forever")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    try:
+        with open(args.state) as fh:
+            known = set(json.load(fh))
+    except Exception:
+        known = set()
 
     s = Store(args.db)
     series = {}
@@ -132,9 +156,23 @@ def main():
                             (stratum,)).fetchall()
         series[stratum] = [r["cohort"] for r in rows]
 
-    report, problems = analyse(series, now=args.now)
+    report, problems = analyse(series, now=args.now, known=known)
     measured = sum(1 for r in report
                    if r["verdict"] in ("complete", "GAPS", "STALLED"))
+
+    # Remember every gap seen, so the next run stays quiet about it.
+    seen = set(known)
+    for r in report:
+        for g in r.get("gaps", []):
+            seen.add("%s|%s|%s" % (r["stratum"], g["from"], g["to"]))
+    if seen != known:
+        tmp = args.state + ".tmp"
+        try:
+            with open(tmp, "w") as fh:
+                json.dump(sorted(seen), fh, indent=1)
+            os.replace(tmp, args.state)
+        except Exception as exc:
+            print("could not record the gaps seen: %s" % exc)
 
     if args.json:
         print(json.dumps({"ok": True, "strata": report, "problems": problems},
@@ -149,8 +187,10 @@ def main():
             line += "  -> %s" % r["verdict"]
             print(line)
             for g in r.get("gaps", []):
-                print("      MISSED %d: %s -> %s (%.1f min)"
-                      % (g["missed"], g["from"], g["to"], g["minutes"]))
+                print("      MISSED %d: %s -> %s (%.1f min)%s"
+                      % (g["missed"], g["from"], g["to"], g["minutes"],
+                         "  [already reported]" if g.get("already_reported")
+                         else ""))
         print()
         if problems:
             print("SCHEDULED RUNS THAT PRODUCED NOTHING:")

@@ -73,8 +73,12 @@ CREATE TABLE IF NOT EXISTS decisions (
     target       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS decisions_resolved ON decisions(correct);
-CREATE INDEX IF NOT EXISTS decisions_due ON decisions(due_at);
 """
+# NOTE: the index on due_at is created in _migrate(), NOT here. Creating it in
+# the schema script looked right and was wrong: on a database that already
+# existed, CREATE TABLE IF NOT EXISTS did nothing, so due_at was still absent
+# when the CREATE INDEX ran, and every existing ledger refused to open. A fresh
+# database takes a different path through this code and hid the fault.
 
 TIER_VERIFIED = "verified"
 TIER_ASSERTED = "asserted"

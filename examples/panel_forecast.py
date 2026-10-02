@@ -186,13 +186,18 @@ class ModelForecaster(Forecaster):
     """
 
     def __init__(self, url: str, model: str, current: dict, history: dict,
-                 minutes: int, timeout: int = 180, name: str | None = None):
+                 minutes: int, timeout: int = 300, keep_alive: str = "30m",
+                 name: str | None = None):
         self.url = url.rstrip("/")
         self.model = model
         self.current = current
         self.history = history
         self.minutes = minutes
         self.timeout = timeout
+        # Without this the server unloads the model between runs and every
+        # sample pays the full cold-load again. On this hardware that is minutes
+        # of GPU per run to answer ten yes/no questions.
+        self.keep_alive = keep_alive
         self.name = name or ("model:" + model)
         self._cache = None
         self.error = None
@@ -208,7 +213,7 @@ class ModelForecaster(Forecaster):
                                rates=json.dumps(rates, indent=2),
                                keep=HISTORY_KEEP, keys=keys)
         body = json.dumps({"model": self.model, "prompt": prompt, "stream": False,
-                           "format": "json",
+                           "format": "json", "keep_alive": self.keep_alive,
                            "options": {"temperature": 0.0, "num_predict": 900}}).encode()
         req = urllib.request.Request(self.url + "/api/generate", data=body,
                                      headers={"Content-Type": "application/json"})
@@ -269,7 +274,8 @@ def run_once(ledger: DecisionLedger, panel: dict, args, history: dict) -> dict:
     model_stats = None
     if args.model and not args.no_model:
         mf = ModelForecaster(args.model_url, args.model, measurable, history,
-                             args.minutes)
+                             args.minutes, timeout=args.model_timeout,
+                             keep_alive=args.model_keep_alive)
         forecasters.append(mf)
         forecasters, model_stats = forecasters, mf
 
@@ -304,6 +310,10 @@ def main() -> int:
                     help="optional local model to compare against the baselines")
     ap.add_argument("--model-url", default=os.environ.get(
         "PANEL_MODEL_URL", "http://127.0.0.1:11434"))
+    ap.add_argument("--model-timeout", type=int, default=300)
+    ap.add_argument("--model-keep-alive", default="30m",
+                    help="keeps the model resident between runs; without it every "
+                         "sample pays the cold load again")
     ap.add_argument("--no-model", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--dry-run", action="store_true",

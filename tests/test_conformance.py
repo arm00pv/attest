@@ -421,6 +421,56 @@ def c025_wilson_brackets_the_estimate():
 # was never about the future. These control the half that is.
 
 
+def c037_an_existing_ledger_gains_the_prospective_columns():
+    """The bug this was written to catch, found on the real estate ledger.
+
+    The index on due_at was created by the schema script, which runs BEFORE the
+    migration that adds the column. On a database that already existed, CREATE
+    TABLE IF NOT EXISTS did nothing, so due_at was still missing when the index
+    was built and the store refused to open at all. A brand-new database takes a
+    different path and worked perfectly, which is exactly why it got through:
+    the fresh path and the upgrade path are not the same path, and only one of
+    them had ever been exercised."""
+    from attest.decisions import now_iso
+    from attest.decisions import DecisionLedger
+    d = tempfile.mkdtemp(prefix="attest_mig_")
+    p = os.path.join(d, "old.db")
+    con = sqlite3.connect(p)
+    con.executescript("""
+CREATE TABLE decisions (
+    id TEXT PRIMARY KEY, at TEXT NOT NULL, who TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '',
+    qtype TEXT NOT NULL CHECK (qtype IN ('choice','noul','score')),
+    answer TEXT NOT NULL DEFAULT '', probability REAL, confidence REAL,
+    alternatives TEXT NOT NULL DEFAULT '{}', outcome TEXT,
+    correct INTEGER CHECK (correct IN (0,1) OR correct IS NULL), resolved_at TEXT);
+CREATE INDEX decisions_resolved ON decisions(correct);
+""")
+    con.execute("INSERT INTO decisions (id, at, qtype) VALUES "
+                "('dec:old','2026-01-01T00:00:00Z','noul')")
+    con.commit()
+    con.close()
+
+    try:
+        s = Store(p)
+        opened = True
+    except Exception as exc:
+        ok("C037 a ledger written before the prospective columns existed still "
+           "opens", False, "%s: %s" % (type(exc).__name__, exc))
+        return
+    ok("C037 a ledger written before the prospective columns existed still opens",
+       opened)
+    cols = {r["name"] for r in s.db.execute("PRAGMA table_info(decisions)")}
+    ok("C037b and it gains due_at, stratum, cohort and target",
+       {"due_at", "stratum", "cohort", "target"} <= cols, sorted(cols))
+    kept = s.db.execute("SELECT id FROM decisions").fetchall()
+    ok("C037c with the decisions already in it left alone", len(kept) == 1, len(kept))
+    r = DecisionLedger(s).record("q", "true", qtype="noul", probability=0.5,
+                                 due_at=now_iso(600))
+    ok("C037d and it can record a forecast afterwards", r.get("ok") is True, r)
+
+
 def c026_a_forecast_must_be_about_the_future():
     from attest.decisions import now_iso
     svc, d = tmp_service()
@@ -668,6 +718,7 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c023_overconfidence_is_detected_and_only_then,
             c024_a_well_calibrated_bucket_is_not_called_overconfident,
             c025_wilson_brackets_the_estimate,
+            c037_an_existing_ledger_gains_the_prospective_columns,
             c026_a_forecast_must_be_about_the_future,
             c027_only_forecasts_come_due,
             c028_an_unresolvable_forecast_stays_open,

@@ -12,7 +12,7 @@
  "attest/verdict.py": "45bee03d50bde4570a8d6ab12aad49b4",
  "examples/panel_forecast.py": "06672614afefd96606a07df11411ea11",
  "tests/run_all.py": "fff5c8181879ae8ebcac8fb33a4ae679",
- "tests/test_conformance.py": "0186dda709ce236a8be083751fa44357",
+ "tests/test_conformance.py": "0eeb292693a5f3bb27bbab81ca8e9b44",
  "tools/deploy_check.py": "65674634b8f113d8e5eaa2f52940b4f3",
- "tools/fleet_coverage.py": "7fdf2755a08bfedf068201ce821b3250"
+ "tools/fleet_coverage.py": "10b0a6e994f23a65b69e7b7bedef2dbc"
 }

@@ -34,6 +34,12 @@ scp -q -o StrictHostKeyChecking=no -i "$KEY" \
 # this file reported it as MISSING because only *.py was being copied.
 scp -q -o StrictHostKeyChecking=no -i "$KEY" \
   tools/*.py tools/*.sh "$HOST:$DEST/tools/"
+# The fleet runners carry real logic - the required-ledger guard, the lock-contention
+# shout, the truthful exit code - and they lived in ~/bin, outside the drift check that
+# caught five other files in one day. They are tracked now, and the crontab points here.
+ssh -o StrictHostKeyChecking=no -i "$KEY" "$HOST" "mkdir -p $DEST/bin"
+scp -q -o StrictHostKeyChecking=no -i "$KEY" \
+  bin/*.sh "$HOST:$DEST/bin/"
 scp -q -o StrictHostKeyChecking=no -i "$KEY" \
   tests/test_conformance.py tests/run_all.py "$HOST:$DEST/tests/"
 scp -q -o StrictHostKeyChecking=no -i "$KEY" deploy_manifest.json "$HOST:$DEST/"

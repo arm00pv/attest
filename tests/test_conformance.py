@@ -834,6 +834,86 @@ def c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored(
        len(fresh) == 1 and "11:00:00Z -> 2026-10-02T11:45:00Z" in fresh[0], fresh)
 
 
+def c053_a_slow_forecaster_must_not_hold_the_write_lock():
+    """Found by asking where the model call sits relative to the transaction.
+
+    record_forecasts records inside its prediction loop, so the FIRST insert opens a
+    write transaction and the loop then calls the NEXT forecaster - and the model
+    forecaster blocks on an HTTP call for up to its timeout, 840 seconds here. So
+    batching, introduced to REDUCE contention, had introduced a fourteen-minute writer
+    lock in the model stratum.
+
+    Measured before the fix, with commit=False held open the way that loop held it:
+
+        second writer FAILED after 30.0s: OperationalError: database is locked
+
+    Predicting everything first means the slow call happens before anything is
+    written."""
+    d = tempfile.mkdtemp(prefix="attest_slow_")
+    db = os.path.join(d, "s.db")
+    Store(db)
+
+    slow = os.path.join(d, "slow.py")
+    with open(slow, "w") as fh:
+        fh.write("import sys, time\n"
+                 "sys.path.insert(0, %r)\n"
+                 "from attest import Store, DecisionLedger\n"
+                 "from attest.decisions import now_iso\n"
+                 "from attest.forecast import Constant, Forecaster, Item, record_forecasts\n"
+                 "class Slow(Forecaster):\n"
+                 "    name = 'slow'\n"
+                 "    def predict(self, item, history=None):\n"
+                 "        time.sleep(8)          # stands in for the model call\n"
+                 "        return 0.5\n"
+                 "l = DecisionLedger(Store(sys.argv[1]))\n"
+                 "items = [Item('t%%d' %% i, 'q?', stratum='slow') for i in range(3)]\n"
+                 "record_forecasts(l, items, [Constant(0.5, 'fast'), Slow()],\n"
+                 "                cohort='slow', due_at=now_iso(600))\n" % ROOT)
+
+    p = subprocess.Popen([sys.executable, slow, db],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    time.sleep(2)                     # let it get past the first fast forecast
+    con = sqlite3.connect(db, timeout=5)   # five seconds of patience, not thirty
+    blocked = None
+    try:
+        con.execute("INSERT INTO decisions (id, at, qtype, answer, stratum) "
+                    "VALUES ('dec:other','2026-10-02T00:00:00Z','noul','a','other')")
+        con.commit()
+    except sqlite3.OperationalError as exc:
+        blocked = str(exc)
+    finally:
+        con.close()
+    _o, err = p.communicate(timeout=120)
+    ok("C053 while a slow forecaster is running, another writer still gets in",
+       blocked is None and p.returncode == 0,
+       {"blocked": blocked, "slow_rc": p.returncode, "err": (err or b"").decode()[-160:]})
+
+    # The negative half: the OLD shape - a transaction held open across the slow
+    # call - must still block a writer, or the check above proves nothing.
+    d2 = tempfile.mkdtemp(prefix="attest_slow2_")
+    db2 = os.path.join(d2, "s.db")
+    Store(db2)
+    holder = sqlite3.connect(db2, timeout=30)
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("INSERT INTO decisions (id, at, qtype, answer, stratum) "
+                   "VALUES ('dec:held','2026-10-02T00:00:00Z','noul','a','held')")
+    other = sqlite3.connect(db2, timeout=5)
+    still_blocked = None
+    try:
+        other.execute("INSERT INTO decisions (id, at, qtype, answer, stratum) "
+                      "VALUES ('dec:x','2026-10-02T00:00:00Z','noul','a','x')")
+        other.commit()
+    except sqlite3.OperationalError as exc:
+        still_blocked = str(exc)
+    finally:
+        other.close()
+        holder.rollback()
+        holder.close()
+    ok("C053b and the OLD shape - a transaction held open across the slow call - does "
+       "still block, so the check above is not passing by accident",
+       still_blocked is not None and "locked" in still_blocked, still_blocked)
+
+
 def c052_the_cure_has_a_cost_and_it_is_measured():
     """WAL traded a loud failure for a quiet one, and this is the quiet one.
 
@@ -1344,7 +1424,8 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored,
             c050_a_run_can_succeed_and_still_cover_less,
             c051_the_real_write_paths_survive_each_other,
-            c052_the_cure_has_a_cost_and_it_is_measured]
+            c052_the_cure_has_a_cost_and_it_is_measured,
+            c053_a_slow_forecaster_must_not_hold_the_write_lock]
 
 
 def main():

@@ -178,11 +178,21 @@ def record_forecasts(ledger, items: Sequence[Item], forecasters: Sequence[Foreca
     a half hours for a daily one - and the next run always clears it.
     """
     written, refused = [], []
-    # ONE COMMIT FOR THE WHOLE BATCH, not one per decision. Recording three hundred
-    # forecasts one commit at a time means three hundred fsyncs holding the writer
-    # lock in three hundred separate bursts, and on 2026-10-02 that was long enough
-    # for a scheduled panel run to lose its turn with "database is locked". Batching
-    # is the fix that removes the contention rather than merely tolerating it.
+
+    # PREDICT EVERYTHING FIRST, THEN WRITE. This is not a style choice.
+    #
+    # Recording inside the prediction loop means the FIRST insert opens a write
+    # transaction and the loop then calls the next forecaster - and a forecaster can
+    # be slow. The model forecaster blocks on an HTTP call for up to its timeout,
+    # 840 seconds in this estate's configuration. Measured 2026-10-02 with
+    # commit=False held open the way this loop held it:
+    #
+    #     second writer FAILED after 30.0s: OperationalError: database is locked
+    #
+    # So batching - introduced to REDUCE contention - had introduced a 14-minute
+    # writer lock in the model stratum. Predicting first means the slow call happens
+    # before anything is written and no transaction is open while it runs.
+    planned = []
     for item in items:
         for f in forecasters:
             p = f.predict(item, history)
@@ -190,24 +200,31 @@ def record_forecasts(ledger, items: Sequence[Item], forecasters: Sequence[Foreca
                 refused.append({"target": item.target, "model": f.name,
                                 "why": "no opinion offered"})
                 continue
-            p = min(1.0, max(0.0, float(p)))
-            # The answer must be the point prediction the probability implies. A
-            # row that answers "true" while carrying p=0.005 asserts a proposition
-            # and denies it in the same breath, and a table of those is not
-            # evidence of anything.
-            r = ledger.record(
-                question=item.question,
-                answer="true" if p >= 0.5 else "false", qtype="noul",
-                probability=p, confidence=p, state=item.context,
-                model=f.name, who=who, alternatives=item.alternatives,
-                due_at=due_at, stratum=item.stratum, cohort=cohort,
-                target=item.target, commit=False)
-            if r.get("ok"):
-                written.append({"id": r["id"], "target": item.target,
-                                "model": f.name, "p": round(p, 4)})
-            else:
-                refused.append({"target": item.target, "model": f.name,
-                                "why": r.get("error")})
+            planned.append((item, f, min(1.0, max(0.0, float(p)))))
+
+    # ONE COMMIT FOR THE WHOLE BATCH, not one per decision. Recording three hundred
+    # forecasts one commit at a time means three hundred fsyncs holding the writer
+    # lock in three hundred separate bursts, and on 2026-10-02 that was long enough
+    # for a scheduled panel run to lose its turn with "database is locked". Batching
+    # removes the contention rather than merely tolerating it - as long as nothing
+    # slow runs while the transaction is open.
+    for item, f, p in planned:
+        # The answer must be the point prediction the probability implies. A row that
+        # answers "true" while carrying p=0.005 asserts a proposition and denies it in
+        # the same breath, and a table of those is not evidence of anything.
+        r = ledger.record(
+            question=item.question,
+            answer="true" if p >= 0.5 else "false", qtype="noul",
+            probability=p, confidence=p, state=item.context,
+            model=f.name, who=who, alternatives=item.alternatives,
+            due_at=due_at, stratum=item.stratum, cohort=cohort,
+            target=item.target, commit=False)
+        if r.get("ok"):
+            written.append({"id": r["id"], "target": item.target,
+                            "model": f.name, "p": round(p, 4)})
+        else:
+            refused.append({"target": item.target, "model": f.name,
+                            "why": r.get("error")})
     ledger.db.commit()
     return {"ok": True, "cohort": cohort, "due_at": due_at,
             "items": len(items), "forecasters": len(forecasters),

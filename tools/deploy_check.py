@@ -50,7 +50,8 @@ DEFAULT_PATHS = (
     "attest/trust.py", "attest/verdict.py",
     "examples/panel_forecast.py",
     "tests/test_conformance.py", "tests/run_all.py",
-    "tools/deploy_check.py", "tools/fleet_coverage.py",
+    "tools/deploy_check.py", "tools/deploy_to_throne.sh",
+    "tools/fleet_coverage.py",
     "tools/fleet_sweep.py", "tools/fleet_trust.py",
 )
 

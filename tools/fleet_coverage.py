@@ -170,7 +170,12 @@ def main():
         os.path.expanduser("~"), ".omni_brain", "fleet_coverage_seen.json"),
         help="gaps already reported, so they are not re-alerted forever")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+    # NOTE: argparse exits 2 on a usage error, which is the same code this file uses
+    # for NOT MEASURED. A typo in a cron line would therefore read as "could not
+    # measure" rather than "bad arguments". The usage text on stderr distinguishes
+    # them in the log; the number does not. Recorded rather than papered over.
 
     try:
         with open(args.state) as fh:
@@ -193,8 +198,11 @@ def main():
                             if stamp(r["cohort"])]
 
     report, problems = analyse(series, now=args.now, known=known, targets=targets)
+    # PARTIAL must be counted here. It is a JUDGED verdict - the run was measured
+    # and found to cover less - and leaving it out means a run of all-PARTIAL
+    # strata would report "NOT MEASURED", which is the opposite of what happened.
     measured = sum(1 for r in report
-                   if r["verdict"] in ("complete", "GAPS", "STALLED"))
+                   if r["verdict"] in ("complete", "GAPS", "PARTIAL", "STALLED"))
 
     # Remember every gap seen, so the next run stays quiet about it.
     seen = set(known)

@@ -38,7 +38,9 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import time
 
 # What the deployment is expected to contain. Kept as an explicit list rather than a
 # glob, so that a file which disappears shows up as missing instead of quietly
@@ -73,6 +75,64 @@ def make(root: str, paths) -> dict:
     return out
 
 
+def process_check(root: str, manifest: dict, patterns):
+    """Long-lived processes must be running the code that is on disk.
+
+    WHY THIS EXISTS, found on 2026-10-02. The HTTP API process had been started at
+    15:36 and every file it loads had been replaced since. It advertised EIGHT
+    operations while the file on disk had ELEVEN, and - far worse - it silently
+    dropped due_at, stratum, cohort and target from every request. A caller
+    recording a FORECAST got a retrospective back, with "ok": true and no warning.
+
+    The file check could not see any of this. Every file was in sync; the PROCESS
+    was old. A deployment check that only looks at files will always miss the
+    process, and a process is what actually serves the traffic.
+    """
+    newest, newest_rel = 0.0, ""
+    for rel in manifest:
+        full = os.path.join(root, rel)
+        if os.path.isfile(full):
+            m = os.path.getmtime(full)
+            if m > newest:
+                newest, newest_rel = m, rel
+    if not newest:
+        return [], []
+    stale, fresh = [], []
+    now = time.time()
+    # EXCLUDE OURSELVES. pgrep -f matches a full command line, and this script is
+    # invoked as "deploy_check.py --check ... --running 'attest serve'" - so the
+    # pattern is IN its own cmdline and it matches itself. Observed on 2026-10-02:
+    # the check reported "process ok  attest serve (pid 4177608)" for a process that
+    # was this script. Being always fresh, it inflates the count and can mask a real
+    # one in a list somebody is scanning.
+    mine = {os.getpid(), os.getppid()}
+    for pattern in patterns:
+        try:
+            out = subprocess.run(["pgrep", "-f", pattern], capture_output=True,
+                                 text=True, timeout=20).stdout.split()
+        except Exception:
+            continue
+        for pid in out:
+            try:
+                if int(pid) in mine:
+                    continue
+            except ValueError:
+                continue
+            try:
+                et = subprocess.run(["ps", "-o", "etimes=", "-p", pid],
+                                    capture_output=True, text=True,
+                                    timeout=20).stdout.strip()
+                started = now - float(et)
+            except Exception:
+                continue
+            entry = {"pattern": pattern, "pid": int(pid),
+                     "started_age_s": round(now - started),
+                     "newest_file": newest_rel,
+                     "newest_age_s": round(now - newest)}
+            (stale if started < newest else fresh).append(entry)
+    return stale, fresh
+
+
 def check(root: str, manifest: dict):
     in_sync, drifted, missing = [], [], []
     for rel, want in sorted(manifest.items()):
@@ -90,6 +150,9 @@ def main() -> int:
     ap.add_argument("--root", default=".")
     ap.add_argument("--make")
     ap.add_argument("--check")
+    ap.add_argument("--running", action="append", default=[], metavar="PATTERN",
+                    help="a long-lived process whose code must match the files, "
+                         "e.g. --running 'attest serve'. Repeatable.")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
@@ -114,6 +177,10 @@ def main() -> int:
         return 2
 
     in_sync, drifted, missing = check(args.root, manifest)
+    stale_procs, fresh_procs = ([], [])
+    if args.running:
+        stale_procs, fresh_procs = process_check(args.root, manifest, args.running)
+
     if not args.quiet:
         for rel in in_sync:
             print("  in sync  %s" % rel)
@@ -122,14 +189,28 @@ def main() -> int:
         for rel in missing:
             print("  MISSING  %s" % rel)
 
+    for p in stale_procs:
+        print("  STALE PROCESS  %s (pid %d) started %ds ago; %s changed %ds ago"
+              % (p["pattern"], p["pid"], p["started_age_s"], p["newest_file"],
+                 p["newest_age_s"]))
+    for p in fresh_procs:
+        print("  process ok     %s (pid %d)" % (p["pattern"], p["pid"]))
+
     print("=" * 62)
-    print("%d in sync, %d drifted, %d missing, of %d expected"
-          % (len(in_sync), len(drifted), len(missing), len(manifest)))
+    print("%d in sync, %d drifted, %d missing, of %d expected; %d stale process(es)"
+          % (len(in_sync), len(drifted), len(missing), len(manifest),
+             len(stale_procs)))
     if drifted or missing:
         print("THE DEPLOYMENT IS NOT THE CODE THAT WAS TESTED. A passing test suite "
               "says nothing about what is running.")
         return 1
-    print("the deployment matches the manifest")
+    if stale_procs:
+        print("THE FILES ARE IN SYNC AND A LONG-LIVED PROCESS IS NOT. It loaded its "
+              "code before these files changed, so what it serves is older than what "
+              "was tested - and it will keep serving it until it is restarted.")
+        return 1
+    print("the deployment matches the manifest"
+          + (", and every checked process is running it" if args.running else ""))
     return 0
 
 

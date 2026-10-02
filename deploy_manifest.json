@@ -13,6 +13,8 @@
  "examples/panel_forecast.py": "06672614afefd96606a07df11411ea11",
  "tests/run_all.py": "fff5c8181879ae8ebcac8fb33a4ae679",
  "tests/test_conformance.py": "0eeb292693a5f3bb27bbab81ca8e9b44",
- "tools/deploy_check.py": "65674634b8f113d8e5eaa2f52940b4f3",
- "tools/fleet_coverage.py": "10b0a6e994f23a65b69e7b7bedef2dbc"
+ "tools/deploy_check.py": "877e2bd514e4f9a03166455b3ec7e355",
+ "tools/fleet_coverage.py": "10b0a6e994f23a65b69e7b7bedef2dbc",
+ "tools/fleet_sweep.py": "61d0b7710f9f2632193ce3e08420f6dc",
+ "tools/fleet_trust.py": "64334fa315c1ad558f015f28425718a9"
 }

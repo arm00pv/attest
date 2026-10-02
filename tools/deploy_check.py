@@ -51,6 +51,7 @@ DEFAULT_PATHS = (
     "examples/panel_forecast.py",
     "tests/test_conformance.py", "tests/run_all.py",
     "tools/deploy_check.py", "tools/fleet_coverage.py",
+    "tools/fleet_sweep.py", "tools/fleet_trust.py",
 )
 
 

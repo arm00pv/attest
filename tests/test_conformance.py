@@ -680,6 +680,105 @@ def c035_two_forecasters_are_scored_on_the_same_items():
        [r["probability"] for r in rows if r["model"] == "base-rate"])
 
 
+def c043_an_unchecked_host_is_not_an_untrusted_one():
+    """An assertion that could not be measured is dropped, not treated as false. A
+    host nobody could reach and a host that answered and was found wanting are
+    different facts, and collapsing them is how a broken probe becomes a bad
+    reputation."""
+    from attest.trust import Assertion, assertions_to_items
+    a = [Assertion("h1", "k1", "port_open", True),
+         Assertion("h1", "k2", "port_open", None),      # could not measure
+         Assertion("h1", "k3", "port_open", False)]
+    items = assertions_to_items(a, 360)
+    ok("C043 an assertion that could not be measured is dropped, not made false",
+       len(items) == 2, [i.target for i in items])
+    ok("C043b and the measurable ones keep their real values",
+       sorted(i.target for i in items) == ["h1|k1", "h1|k3"], items)
+
+
+def c044_a_host_without_evidence_is_excluded_not_ranked_last():
+    """Quietly ordering an unmeasured host last is how an estate comes to believe it
+    has compared three machines when it has compared two."""
+    from attest.trust import host_stability, route
+    hist, host_of = {}, {}
+    for i in range(6):
+        hist["steady|k%d" % i] = [True] * 9
+        host_of["steady|k%d" % i] = "steady"
+    hist["unknown|k0"] = [True]
+    host_of["unknown|k0"] = "unknown"
+
+    st = host_stability(hist, host_of)
+    r = route(["steady", "unknown", "never-heard-of-it"], st, require_pairs=4)
+    ok("C044 a host with no verification history is EXCLUDED, not ranked last",
+       r["chosen"] == "steady"
+       and sorted(x["host"] for x in r["excluded"]) == ["never-heard-of-it",
+                                                        "unknown"],
+       r["excluded"])
+    ok("C044b and the exclusion says why, with the count it needed",
+       all("needed to rank" in x["why"] for x in r["excluded"]), r["excluded"])
+
+    # And when NOBODY has evidence, routing refuses rather than picking one anyway.
+    r2 = route(["a", "b"], host_stability({}, {}), require_pairs=4)
+    ok("C044c with no evidence anywhere, routing refuses rather than guessing",
+       r2["chosen"] is None and "NO HOST HAS ENOUGH EVIDENCE" in r2["verdict"],
+       r2["verdict"][:120])
+
+
+def c046_many_assertions_checked_twice_is_one_moment_in_time():
+    """The same trap as many decisions inside one cohort, one layer down.
+
+    Sixty-one assertions checked twice produce sixty-one observation pairs and exactly
+    one transition. A stability figure computed from that looks identical to one
+    computed from a week of evidence, and routing on it would be routing on a single
+    moment dressed up as a measured reputation."""
+    from attest.trust import host_stability, route
+    hist, host_of = {}, {}
+    for i in range(61):                      # a host with a LOT of assertions...
+        hist["big|k%d" % i] = [True, True]   # ...checked exactly twice
+        host_of["big|k%d" % i] = "big"
+    st = host_stability(hist, host_of)
+    ok("C046 sixty-one assertions checked twice is 61 pairs but only 1 check",
+       st["big"]["observation_pairs"] == 61 and st["big"]["checks"] == 1, st["big"])
+    r = route(["big"], st, require_pairs=4, require_checks=3)
+    ok("C046b so the host is EXCLUDED despite having far more pairs than required",
+       r["chosen"] is None and "check(s)" in r["excluded"][0]["why"], r["excluded"])
+    ok("C046c and the exclusion names the count it actually lacked",
+       "1 check(s), 3 needed" in r["excluded"][0]["why"], r["excluded"][0]["why"])
+
+    # Once there are enough real checks, the same host becomes rankable.
+    for i in range(61):
+        hist["big|k%d" % i] = [True, True, True, True]
+    st2 = host_stability(hist, host_of)
+    ok("C046d with four checks the same host becomes rankable",
+       route(["big"], st2, require_pairs=4, require_checks=3)["chosen"] == "big",
+       st2["big"])
+
+
+def c045_a_perfect_record_does_not_buy_certainty():
+    """Laplace smoothing, for the same reason the base-rate forecaster has it: finite
+    evidence cannot establish a probability of exactly one."""
+    from attest.trust import host_stability, HostStability
+    hist = {"a|k%d" % i: [True] * 40 for i in range(4)}
+    host_of = {"a|k%d" % i: "a" for i in range(4)}
+    st = host_stability(hist, host_of)
+    ok("C045 a flawless host records a flip rate above zero",
+       st["a"]["flip_rate"] > 0, st["a"])
+    ok("C045b so its stability is high but strictly below certainty",
+       0.9 < st["a"]["stable_probability"] < 1.0, st["a"]["stable_probability"])
+
+    # And the naive baseline and the trust model must be able to disagree, or the
+    # trust model is doing nothing the assumption was not already doing.
+    obs = {k: True for k in hist}
+    hs = HostStability(hist, obs, host_of)
+    flappy = {"a|k0": [True, False] * 9}
+    hs_f = HostStability(flappy, {"a|k0": True}, {"a|k0": "a"})
+    from attest.trust import AlwaysHolds, Assertion
+    item = Assertion("a", "k0", "port_open", True).item(360)
+    ok("C045c and on an assertion with a bad history the two disagree sharply",
+       hs_f.predict(item) < 0.5 < AlwaysHolds(obs).predict(item),
+       {"trust": hs_f.predict(item), "naive": AlwaysHolds(obs).predict(item)})
+
+
 def c042_resolution_is_the_thing_accuracy_cannot_see():
     """The daily sweep has one broken target in forty-one, so a forecaster that says
     "nothing will break" scores 97.6% accuracy. Every accuracy-shaped summary calls
@@ -900,7 +999,11 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c039_a_short_gap_is_not_reported_as_a_broken_resolver,
             c040_a_headline_may_not_overstate_the_sample_it_rests_on,
             c041_a_pooled_score_may_not_hide_a_change_of_method,
-            c042_resolution_is_the_thing_accuracy_cannot_see]
+            c042_resolution_is_the_thing_accuracy_cannot_see,
+            c043_an_unchecked_host_is_not_an_untrusted_one,
+            c044_a_host_without_evidence_is_excluded_not_ranked_last,
+            c045_a_perfect_record_does_not_buy_certainty,
+            c046_many_assertions_checked_twice_is_one_moment_in_time]
 
 
 def main():

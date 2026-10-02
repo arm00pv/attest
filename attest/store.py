@@ -88,6 +88,16 @@ TIER_ASSERTED = "asserted"
 # happens to use. It was measured as too short on 2026-10-02: an estate with four
 # jobs writing to one ledger lost a scheduled run to "database is locked" while a
 # batch of 294 forecasts was being recorded.
+#
+# WHY THIS AND NOT AN ADVISORY LOCK OVER THE WHOLE JOB. The obvious fix - one shared
+# lock so the four writers take turns - was considered and rejected. It would make a
+# job that holds the lock for fifteen minutes (a model run) block one that needs two
+# seconds (a sampling run), and it would add a second, worse locking layer on top of
+# the one SQLite already provides. What was actually wrong was the WINDOW: 588
+# separate commits for one batch of forecasts, each taking the write lock in its own
+# burst. Shrinking the window by batching, letting WAL decouple readers from the
+# writer, and waiting 30 seconds instead of 5 addresses the cause. Measured: 0.715s
+# of lock-holding for 100 forecasts became 0.009s.
 BUSY_TIMEOUT_MS = 30000
 
 # Columns added when the ledger learned to hold a decision OPEN. A decision made

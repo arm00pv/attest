@@ -55,6 +55,7 @@ DEFAULT_PATHS = (
     "bin/fleet_run.sh", "bin/fleet_panel_run.sh", "bin/fleet_model_run.sh",
     "bin/fleet_sweep_run.sh", "bin/fleet_trust_run.sh",
     "bin/fleet_coverage_run.sh", "bin/fleet_deploycheck_run.sh",
+    "bin/fleet_apiguard_run.sh", "bin/api_guard.sh",
     "tools/deploy_check.py", "tools/deploy_to_throne.sh",
     "tools/fleet_coverage.py",
     "tools/fleet_sweep.py", "tools/fleet_trust.py",

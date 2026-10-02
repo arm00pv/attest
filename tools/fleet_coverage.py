@@ -131,23 +131,34 @@ def analyse(series, periods=None, now=None, slack=SLACK, known=None,
         #
         # A DROP is the signal, not a difference: the sweep's target universe grows
         # as new timers appear, so 40 then 43 is healthy. 14 then 13 is not.
+        #
+        # TWO DIMENSIONS, NOT ONE. Counting targets alone misses a FORECASTER
+        # dropping out: if the model stops answering, the panel still covers all
+        # fourteen targets with the baselines, so the target count is unchanged
+        # while decisions fall from 56 to 42. Demonstrated before this was written:
+        # targets constant at 14 with decisions 56 -> 42 reported "complete".
         tser = []
         for item in (targets.get(stratum) or []):
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                tser.append((item[0], item[1]))
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                tser.append((item[0], item[1],
+                             item[2] if len(item) > 2 else None))
         tser.sort()
         entry["partial"] = []
-        for (a, na), (b, nb) in zip(tser, tser[1:]):
+        for (a, na, ma), (b, nb, mb) in zip(tser, tser[1:]):
             if nb < na:
-                entry["partial"].append({"from": a, "to": b, "was": na, "now": nb})
+                entry["partial"].append({"from": a, "to": b, "what": "items",
+                                         "was": na, "now": nb})
+            if ma is not None and mb is not None and mb < ma:
+                entry["partial"].append({"from": a, "to": b, "what": "forecasters",
+                                         "was": ma, "now": mb})
         for p in entry["partial"]:
-            key = "%s|partial|%s|%s" % (stratum, p["from"], p["to"])
+            key = "%s|partial|%s|%s|%s" % (stratum, p["what"], p["from"], p["to"])
             p["already_reported"] = key in known
             if not p["already_reported"]:
-                problems.append("%s ran with %d item(s) where the run before it had "
-                                "%d - the run succeeded and silently covered less "
-                                "(%s -> %s)"
-                                % (stratum, p["now"], p["was"], p["from"], p["to"]))
+                problems.append(
+                    "%s ran with %d %s where the run before it had %d - the run "
+                    "succeeded and silently covered less (%s -> %s)"
+                    % (stratum, p["now"], p["what"], p["was"], p["from"], p["to"]))
 
         if entry["gaps"]:
             entry["verdict"] = "GAPS"
@@ -191,10 +202,10 @@ def main():
         # cohorts reported 1634 runs. The first rewrite of this file did exactly
         # that, and the item count is what catches a run that quietly covered less.
         rows = s.db.execute(
-            "select cohort, count(distinct target) n from decisions "
-            "where stratum=? group by cohort", (stratum,)).fetchall()
+            "select cohort, count(distinct target) n, count(distinct model) m "
+            "from decisions where stratum=? group by cohort", (stratum,)).fetchall()
         series[stratum] = [r["cohort"] for r in rows]
-        targets[stratum] = [(stamp(r["cohort"]), r["n"]) for r in rows
+        targets[stratum] = [(stamp(r["cohort"]), r["n"], r["m"]) for r in rows
                             if stamp(r["cohort"])]
 
     report, problems = analyse(series, now=args.now, known=known, targets=targets)
@@ -210,7 +221,8 @@ def main():
         for g in r.get("gaps", []):
             seen.add("%s|%s|%s" % (r["stratum"], g["from"], g["to"]))
         for p in r.get("partial", []):
-            seen.add("%s|partial|%s|%s" % (r["stratum"], p["from"], p["to"]))
+            seen.add("%s|partial|%s|%s|%s" % (r["stratum"], p["what"], p["from"],
+                                              p["to"]))
     if seen != known:
         tmp = args.state + ".tmp"
         try:
@@ -238,8 +250,8 @@ def main():
                          "  [already reported]" if g.get("already_reported")
                          else ""))
             for p in r.get("partial", []):
-                print("      PARTIAL: %s had %d item(s), the run before it had %d%s"
-                      % (p["to"], p["now"], p["was"],
+                print("      PARTIAL: %s had %d %s, the run before it had %d%s"
+                      % (p["to"], p["now"], p["what"], p["was"],
                          "  [already reported]" if p.get("already_reported")
                          else ""))
         print()

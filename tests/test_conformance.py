@@ -747,8 +747,9 @@ def c050_a_run_can_succeed_and_still_cover_less():
     rep, probs = analyse(series, P, now=now, targets=dropped)
     ok("C050 a run that covered 13 items where the one before had 14 is PARTIAL",
        rep[0]["verdict"] == "PARTIAL" and len(rep[0]["partial"]) == 1, rep[0])
-    ok("C050b and the problem names both counts",
-       probs and "13 item(s) where the run before it had 14" in probs[0], probs[:1])
+    ok("C050b and the problem names both counts, and which dimension moved",
+       probs and "13 items where the run before it had 14" in probs[0]
+       and rep[0]["partial"][0]["what"] == "items", probs[:1])
 
     grew = {"quarterly": [("2026-10-02T10:00:00Z", 40),
                           ("2026-10-02T10:15:00Z", 43),
@@ -761,11 +762,34 @@ def c050_a_run_can_succeed_and_still_cover_less():
     ok("C050d and with no item data at all nothing changes",
        rep3[0]["verdict"] == "complete" and not probs3, rep3[0]["verdict"])
 
-    known = {"quarterly|partial|2026-10-02T10:00:00Z|2026-10-02T10:15:00Z"}
+    known = {"quarterly|partial|items|2026-10-02T10:00:00Z|2026-10-02T10:15:00Z"}
     rep4, probs4 = analyse(series, P, now=now, targets=dropped, known=known)
     ok("C050e and an already-reported drop does not re-alert forever, the same rule "
        "as a gap", not probs4 and rep4[0]["partial"][0]["already_reported"] is True,
        rep4[0]["partial"])
+
+    # Count targets alone and a FORECASTER can drop out invisibly: the panel still
+    # covers every target with the baselines, so decisions fall 56 -> 42 while the
+    # target count does not move. Demonstrated before the second dimension existed.
+    lost_model = {"quarterly": [("2026-10-02T10:00:00Z", 14, 4),
+                                ("2026-10-02T10:15:00Z", 14, 3)]}
+    rep5, probs5 = analyse(series, P, now=now, targets=lost_model)
+    ok("C050f a FORECASTER dropping out is caught too, not only a target",
+       rep5[0]["verdict"] == "PARTIAL"
+       and rep5[0]["partial"][0]["what"] == "forecasters"
+       and "3 forecasters where the run before it had 4" in probs5[0], probs5[:1])
+
+    both_grew = {"quarterly": [("2026-10-02T10:00:00Z", 40, 3),
+                               ("2026-10-02T10:15:00Z", 43, 4)]}
+    rep6, probs6 = analyse(series, P, now=now, targets=both_grew)
+    ok("C050g while growth in both dimensions stays healthy",
+       rep6[0]["verdict"] == "complete" and not probs6, rep6[0]["verdict"])
+
+    two_tuple = {"quarterly": [("2026-10-02T10:00:00Z", 14),
+                               ("2026-10-02T10:15:00Z", 13)]}
+    _rep7, probs7 = analyse(series, P, now=now, targets=two_tuple)
+    ok("C050h and the older two-element form still works",
+       len(probs7) == 1, probs7)
 
 
 def c049_a_detector_that_repeats_itself_forever_is_a_detector_that_gets_ignored():

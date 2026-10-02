@@ -52,6 +52,7 @@ import urllib.request
 
 OLLAMA = os.environ.get("OLLAMA", "http://localhost:11434")
 BACKTICK3 = chr(96) * 3
+TIMEOUT = int(os.environ.get("ATTEST_AGENT_TIMEOUT", "900"))
 
 
 PROBES = [
@@ -167,12 +168,15 @@ def run_tool(name, args, port, token):
     return {"ok": False, "error": "no such tool: %s" % name}
 
 
-def chat(model, messages, tools=None, timeout=900):
+def chat(model, messages, tools=None, timeout=None):
+    # num_predict is capped on purpose. Without it a small model on CPU can
+    # generate for many minutes on one call, and an experiment that never
+    # returns is not a measurement. The answer is one JSON object.
     body = {"model": model, "messages": messages, "stream": False,
-            "options": {"temperature": 0}}
+            "options": {"temperature": 0, "num_predict": 600}}
     if tools:
         body["tools"] = tools
-    return http_json(OLLAMA + "/api/chat", body, timeout=timeout)
+    return http_json(OLLAMA + "/api/chat", body, timeout=timeout or TIMEOUT)
 
 
 def parse_verdict(text):
@@ -248,7 +252,11 @@ def main():
     ap.add_argument("--token", default=None)
     ap.add_argument("--json", default=None)
     ap.add_argument("--only", default=None)
+    ap.add_argument("--timeout", type=int, default=None)
     a = ap.parse_args()
+    global TIMEOUT
+    if a.timeout:
+        TIMEOUT = a.timeout
 
     token = a.token
     if not token:

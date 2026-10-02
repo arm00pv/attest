@@ -240,6 +240,17 @@ def main():
     except Exception:
         known = set()
 
+    # A LEDGER THAT IS NOT THERE IS NOT A FRESH START.
+    #
+    # Store() creates the database when the path does not exist - sensible for a new
+    # install, catastrophic here. Measured 2026-10-02: pointed at a path with no
+    # ledger, this reported "NOT ENOUGH RUNS TO JUDGE YET" for every stratum and then
+    # "every stratum ... has produced results on schedule, and none has gone quiet",
+    # exit 0, having silently CREATED an empty database. Had the real ledger been lost
+    # - a disk, a wrong path, a stray rm - the estate would have rebuilt a blank one,
+    # announced that everything was fine, and the entire history would be gone with
+    # nobody told. Silence about a missing memory is the worst possible answer.
+    ledger_existed = os.path.exists(args.db)
     s = Store(args.db)
     series, targets = {}, {}
     for stratum in PERIODS:
@@ -258,12 +269,21 @@ def main():
     wal_bytes = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
     report, problems = analyse(series, now=args.now, known=known, targets=targets,
                                wal_bytes=wal_bytes)
+    if not ledger_existed:
+        problems.insert(0, "THE LEDGER DID NOT EXIST AT %s AND HAS JUST BEEN CREATED "
+                            "EMPTY. Every stratum below is empty because the history is "
+                            "gone, not because nothing has run yet. These are different "
+                            "facts and this is the one that needs somebody."
+                        % args.db)
     # PARTIAL must be counted here. It is a JUDGED verdict - the run was measured
     # and found to cover less - and leaving it out means a run of all-PARTIAL
     # strata would report "NOT MEASURED", which is the opposite of what happened.
+    # The (ledger wal) row is NOT a stratum and must not count. It used to, which
+    # meant a completely empty ledger still reported measured=1 and the
+    # "NOT MEASURED" guard below could never fire.
     measured = sum(1 for r in report
-                   if r["verdict"] in ("complete", "GAPS", "PARTIAL", "STALLED",
-                                       "normal"))
+                   if r["stratum"] in PERIODS
+                   and r["verdict"] in ("complete", "GAPS", "PARTIAL", "STALLED"))
 
     # Remember every gap seen, so the next run stays quiet about it.
     seen = set(known)
@@ -312,6 +332,11 @@ def main():
             print("SCHEDULED RUNS THAT PRODUCED NOTHING:")
             for p in problems:
                 print("  " + p)
+        elif measured == 0:
+            # NOT the healthy message. "We did not measure anything" and "we measured
+            # everything and it is fine" are different sentences and this file printed
+            # the second one for the first case.
+            print("NOTHING WAS MEASURED, so nothing is asserted about the schedule")
         else:
             print("every stratum with a claimed cadence has produced results on "
                   "schedule, and none has gone quiet")

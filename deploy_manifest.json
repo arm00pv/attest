@@ -15,7 +15,7 @@
  "tests/test_conformance.py": "c7ccab8e60a902ef9549d0a6a5e998c1",
  "tools/deploy_check.py": "8cc9eb45dcc4e85e3dd4f82cce7396db",
  "tools/deploy_to_throne.sh": "d0895a8676553b0963b6252b494430a5",
- "tools/fleet_coverage.py": "1e8b5345ccaba5fd253bf94287fb14d6",
+ "tools/fleet_coverage.py": "d8a31dc8fe0d8d9607ecd641bfb1cfe5",
  "tools/fleet_sweep.py": "61d0b7710f9f2632193ce3e08420f6dc",
  "tools/fleet_trust.py": "64334fa315c1ad558f015f28425718a9"
 }

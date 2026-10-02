@@ -22,7 +22,7 @@ from .decisions import DecisionLedger
 from .store import Store, TIER_ASSERTED, TIER_VERIFIED
 from .verdict import Verdict
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # MEASURED on the machine this came from: capabilities() took 122 SECONDS,
 # because it runs real probes, including compiling against Lean. That is the
@@ -319,19 +319,26 @@ class Service:
                         probability: Optional[float] = None,
                         confidence: Optional[float] = None, state: str = "",
                         model: str = "", who: str = "",
-                        alternatives: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                        alternatives: Optional[Dict[str, Any]] = None,
+                        due_at: Optional[str] = None, stratum: str = "",
+                        cohort: str = "", target: str = "") -> Dict[str, Any]:
         """Log one decision WITH the confidence it was made at.
 
         A noul judgment with no probability is refused: a boolean with no
         confidence attached is precisely the unmeasured claim this ledger exists
         to catch. It is UNRESOLVED until an outcome is recorded, and an
         unresolved decision is excluded from every rate. Silence is not success.
+
+        due_at is what makes it a FORECAST rather than a retrospective: the
+        decision stays open until the world catches up, and a due_at that has
+        already passed is refused outright.
         """
         return self.decisions.record(question, answer, qtype=qtype,
                                      probability=probability,
                                      confidence=confidence, state=state,
                                      model=model, who=who,
-                                     alternatives=alternatives)
+                                     alternatives=alternatives, due_at=due_at,
+                                     stratum=stratum, cohort=cohort, target=target)
 
     def resolve_decision(self, decision_id: str, outcome: str = "",
                          correct: Optional[bool] = None) -> Dict[str, Any]:
@@ -344,15 +351,46 @@ class Service:
         """
         return self.decisions.resolve(decision_id, outcome, correct)
 
-    def calibration(self, model: Optional[str] = None) -> Dict[str, Any]:
+    def calibration(self, model: Optional[str] = None,
+                    stratum: Optional[str] = None) -> Dict[str, Any]:
         """How often was a decision taken at confidence p actually right?
 
         Reported per bucket with a Wilson interval, and it REFUSES to report a
         rate below MIN_N resolved decisions. Measured September 2026: 108 items
         could not separate a calibration error of 0.066 from 0.061, so printing a
         rate below a few dozen decisions is printing noise with a decimal point.
+
+        Stratified by horizon, because a decision settled in five minutes and one
+        settled in three weeks are not the same measurement.
         """
-        return self.decisions.calibration(model)
+        return self.decisions.calibration(model, stratum)
+
+    def pending_decisions(self, model: Optional[str] = None,
+                          stratum: Optional[str] = None) -> Dict[str, Any]:
+        """What the ledger is still holding open, and whether any of it is late.
+
+        An estate that stops settling its own forecasts does not look broken - it
+        looks like a ledger that stopped accumulating. The last rate it reported
+        stays on the screen. due_but_unrecorded is the number that catches that.
+        """
+        rows = self.decisions.pending(model=model, stratum=stratum)
+        return {"ok": True, "pending": len(rows), "decisions": rows,
+                "oldest_overdue_seconds": self.decisions.overdue_seconds()}
+
+    def due_decisions(self, model: Optional[str] = None) -> Dict[str, Any]:
+        """Open decisions whose outcome is knowable now, and were not when made."""
+        rows = self.decisions.due(model=model)
+        return {"ok": True, "due": len(rows), "decisions": rows}
+
+    def discriminability(self, model: Optional[str] = None,
+                         stratum: Optional[str] = None) -> Dict[str, Any]:
+        """Whether this population of outcomes could show skill at all.
+
+        The question that has to be answered before any rate is quoted. If
+        nineteen outcomes in twenty are the same, a constant guess scores 95% and
+        a rate printed without this reads as ability.
+        """
+        return self.decisions.discriminability(model, stratum)
 
     # ---------------------------------------------------------------- manifest
     def manifest(self) -> Dict[str, Any]:

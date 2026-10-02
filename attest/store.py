@@ -66,13 +66,41 @@ CREATE TABLE IF NOT EXISTS decisions (
     alternatives TEXT NOT NULL DEFAULT '{}',
     outcome      TEXT,
     correct      INTEGER CHECK (correct IN (0, 1) OR correct IS NULL),
-    resolved_at  TEXT
+    resolved_at  TEXT,
+    due_at       TEXT,
+    stratum      TEXT NOT NULL DEFAULT '',
+    cohort       TEXT NOT NULL DEFAULT '',
+    target       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS decisions_resolved ON decisions(correct);
+CREATE INDEX IF NOT EXISTS decisions_due ON decisions(due_at);
 """
 
 TIER_VERIFIED = "verified"
 TIER_ASSERTED = "asserted"
+
+# Columns added when the ledger learned to hold a decision OPEN. A decision made
+# now and settled later is a different object from one that was scored in the
+# same breath as it was recorded, and the two must be separable in a query.
+#
+# CREATE TABLE IF NOT EXISTS does nothing to a table that already exists, so an
+# existing ledger needs the columns added explicitly. SQLite has no
+# ADD COLUMN IF NOT EXISTS, so this checks PRAGMA first and is safe to re-run.
+DECISION_COLUMNS = (
+    ("due_at", "TEXT"),
+    ("stratum", "TEXT NOT NULL DEFAULT ''"),
+    ("cohort", "TEXT NOT NULL DEFAULT ''"),
+    ("target", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _migrate(db) -> None:
+    have = {r["name"] for r in db.execute("PRAGMA table_info(decisions)").fetchall()}
+    for name, decl in DECISION_COLUMNS:
+        if name not in have:
+            db.execute("ALTER TABLE decisions ADD COLUMN %s %s" % (name, decl))
+    db.execute("CREATE INDEX IF NOT EXISTS decisions_due ON decisions(due_at)")
+    db.commit()
 WORD = re.compile(r"[a-z0-9_]{2,}")
 
 
@@ -96,6 +124,7 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self.db.commit()
+        _migrate(self.db)
         if fresh:
             self.ledger("store_created", self.path)
 

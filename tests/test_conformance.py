@@ -20,6 +20,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -412,6 +413,236 @@ def c025_wilson_brackets_the_estimate():
        (hi2 - lo2) > (hi - lo), ((lo, hi), (lo2, hi2)))
 
 
+# ------------------------------------------------------ the prospective half
+#
+# Everything above settles a decision in the same breath as it records one. That
+# is a retrospective, and a ledger full of retrospectives can report a flawless
+# calibration while never once having been wrong about the future, because it
+# was never about the future. These control the half that is.
+
+
+def c026_a_forecast_must_be_about_the_future():
+    from attest.decisions import now_iso
+    svc, d = tmp_service()
+    r = svc.record_decision("will t1 fail?", "true", qtype="noul", probability=0.7,
+                            due_at=now_iso(3600), stratum="1h", cohort="c1",
+                            target="t1")
+    ok("C026 a decision due in the future is accepted and marked prospective",
+       r.get("ok") is True and r.get("prospective") is True, r)
+    r2 = svc.record_decision("will t1 fail?", "true", qtype="noul", probability=0.7,
+                             due_at=now_iso(-3600))
+    ok("C026b one whose outcome is ALREADY knowable is REFUSED - that is a "
+       "retrospective wearing a forecast's name",
+       r2.get("ok") is False and "retrospective" in r2.get("error", ""), r2)
+    r3 = svc.record_decision("q", "a", qtype="noul", probability=0.5,
+                             due_at="tomorrow")
+    ok("C026c and a malformed due_at is refused rather than guessed at",
+       r3.get("ok") is False, r3)
+
+
+def c027_only_forecasts_come_due():
+    from attest.decisions import now_iso
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    ledger.record("q", "true", qtype="noul", probability=0.5, target="never")
+    ledger.record("q", "true", qtype="noul", probability=0.5,
+                  due_at=now_iso(3600), target="later")
+    ledger.record("q", "true", qtype="noul", probability=0.5,
+                  due_at=now_iso(600), target="soon")
+    # Query at +20 minutes: the +10m forecast has come due, the +60m one has not.
+    due = ledger.due(now=now_iso(1200))
+    ok("C027 only the forecast whose time has come is due", len(due) == 1,
+       [d["target"] for d in due])
+    ok("C027b the never-resolved retrospective is NOT swept up - 'nobody ever "
+       "checked' must not quietly become a rate",
+       all(x["due_at"] for x in due) and len(ledger.pending()) == 3,
+       {"due": len(due), "pending": len(ledger.pending())})
+
+
+def c028_an_unresolvable_forecast_stays_open():
+    from attest.decisions import now_iso
+    from attest.forecast import resolve_due
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    a = ledger.record("q", "true", qtype="noul", probability=0.5,
+                      due_at=now_iso(60))["id"]
+    ledger.record("q", "true", qtype="noul", probability=0.5, due_at=now_iso(61))
+
+    def settle(dec):
+        if dec["id"] == a:
+            return None
+        raise RuntimeError("the probe could not read the host")
+
+    rep = resolve_due(ledger, settle, now=now_iso(7200))
+    ok("C028 a resolver that cannot tell leaves the decision OPEN",
+       rep["settled"] == 0, rep)
+    ok("C028b and one that CRASHES is a failed measurement, not an outcome",
+       any("raised" in x["why"] for x in rep["still_open"]), rep["still_open"])
+    ok("C028c so the ledger still reports both as unresolved rather than "
+       "inventing two answers",
+       ledger.calibration()["unresolved"] == 2, ledger.calibration()["unresolved"])
+
+
+def c029_the_ledger_can_still_catch_a_bad_forecaster():
+    """THE CONTROL FOR THIS WHOLE LAYER. If a forecaster that claims 0.99 and is
+    right half the time is not called overconfident, nothing built on top of it
+    means anything, and the negative control here has to be able to fire."""
+    from attest.decisions import now_iso
+    from attest.forecast import Constant, Item, record_forecasts, resolve_due
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    items = [Item("t%d" % i, "will t fail?", stratum="ctl") for i in range(40)]
+    rec = record_forecasts(ledger, items, [Constant(0.99)], cohort="ctl1",
+                           due_at=now_iso(60))
+    ok("C029 the control forecaster recorded 40 open decisions",
+       rec["recorded"] == 40, rec)
+    truth = {"t%d" % i: (i % 2 == 0) for i in range(40)}
+    rep = resolve_due(ledger,
+                      lambda dec: (str(truth[dec["target"]]), truth[dec["target"]]),
+                      now=now_iso(7200))
+    ok("C029b all forty settled against what actually happened",
+       rep["settled"] == 40, rep["settled"])
+    cal = ledger.calibration(model="constant-0.99", stratum="ctl")
+    b = [x for x in cal["buckets"] if x["bucket"].startswith("0.95")]
+    ok("C029c a forecaster claiming 0.99 and right half the time is OVERCONFIDENT",
+       bool(b) and b[0]["verdict"] == "OVERCONFIDENT", b)
+
+
+def c030_a_population_that_cannot_show_skill_is_named_as_such():
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    for _ in range(40):
+        did = ledger.record("q", "true", qtype="noul", probability=0.9,
+                            stratum="flat")["id"]
+        ledger.resolve(did, "always the same", True)
+    dis = ledger.discriminability(stratum="flat")
+    ok("C030 forty identical outcomes are reported DEGENERATE, not as 100% skill",
+       dis["can_demonstrate_skill"] is False and "DEGENERATE" in dis["verdict"], dis)
+    for i in range(40):
+        did = ledger.record("q", "true", qtype="noul", probability=0.5,
+                            stratum="mixed")["id"]
+        ledger.resolve(did, "varies", i % 2 == 0)
+    dis2 = ledger.discriminability(stratum="mixed")
+    ok("C030b while a genuinely mixed population is reported DISCRIMINATING - "
+       "the detector is not simply always on",
+       dis2["can_demonstrate_skill"] is True and "DISCRIMINATING" in dis2["verdict"],
+       dis2)
+
+
+def c031_a_worse_than_base_rate_forecaster_scores_negative():
+    """Calibration is not skill. An always-0.30 forecaster is perfectly calibrated
+    on a 30% population and carries no information at all, so a second score is
+    needed that can rank them."""
+    from attest.forecast import brier, brier_skill_score
+    pairs = [(0.99, i % 2) for i in range(40)]          # claims 0.99, right 50%
+    ref = sum((0.5 - y) ** 2 for _p, y in pairs) / len(pairs)
+    s = brier_skill_score(pairs, ref)
+    ok("C031 a forecaster worse than the base rate gets a NEGATIVE skill score",
+       s is not None and s < 0, {"brier": brier(pairs), "ref": ref, "skill": s})
+    good = [(0.97 if i % 2 else 0.03, i % 2) for i in range(40)]
+    s2 = brier_skill_score(good, ref)
+    ok("C031b and a genuinely good one scores positive - the score is not merely "
+       "always negative", s2 is not None and s2 > 0, s2)
+
+
+def c032_ranking_refuses_when_the_population_cannot_support_it():
+    from attest.decisions import now_iso
+    from attest.forecast import (Constant, Item, record_forecasts, resolve_due,
+                                  head_to_head)
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    items = [Item("t%d" % i, "q?", stratum="h") for i in range(40)]
+    record_forecasts(ledger, items, [Constant(0.9, "good"), Constant(0.5, "meh")],
+                     cohort="h1", due_at=now_iso(60))
+    resolve_due(ledger, lambda dec: ("yes", True), now=now_iso(7200))
+    h = head_to_head(ledger, ["good", "meh"], stratum="h")
+    ok("C032 with every outcome identical the ranking declines to rank",
+       "cannot demonstrate skill" in h["verdict"], h["verdict"])
+    ok("C032b and it says so per forecaster, not only in prose",
+       all(r["can_demonstrate_skill"] is False for r in h["forecasters"]),
+       h["forecasters"])
+
+
+def c033_many_samples_in_one_cohort_are_not_many_observations():
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    for i in range(40):
+        did = ledger.record("q", "true", qtype="noul", probability=0.9,
+                            stratum="c", cohort="one-batch",
+                            target="t%d" % i)["id"]
+        ledger.resolve(did, "x", i % 2 == 0)
+    cal = ledger.calibration(stratum="c")
+    ok("C033 forty decisions inside one cohort are flagged as an OPTIMISTIC "
+       "interval", cal["cohorts"] == 1 and cal["independence_warning"] is not None,
+       cal.get("independence_warning"))
+    ok("C033b and cohorts are counted next to decisions so the difference is visible",
+       cal["per_cohort"] == 40.0, cal["per_cohort"])
+
+
+def c034_a_forecast_nobody_settled_is_a_broken_resolver():
+    from attest.decisions import now_iso
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    ledger.record("q", "true", qtype="noul", probability=0.5)                  # never a forecast
+    ledger.record("q", "true", qtype="noul", probability=0.5,
+                  due_at=now_iso(3600))                                        # simply early
+    ledger.record("q", "true", qtype="noul", probability=0.5, due_at=now_iso(1))
+    time.sleep(1.4)
+    open_ = ledger.calibration()["open"]
+    ok("C034 the ledger separates 'not knowable yet' from 'knowable and never "
+       "written down' from 'was never a forecast'",
+       open_["awaiting_outcome"] == 1 and open_["due_but_unrecorded"] == 1
+       and open_["never_a_forecast"] == 1, open_)
+    ok("C034b and calls a knowable outcome nobody recorded a broken resolver, "
+       "not a slow one",
+       "broken resolver" in ledger.calibration()["verdict"],
+       ledger.calibration()["verdict"])
+    # Timestamps are whole seconds, so a 1.4s wait can round to zero elapsed.
+    # Move the clock instead of racing it, and check the arithmetic directly.
+    ov = ledger.overdue_seconds(now=now_iso(3600))
+    ok("C034c with the age of the oldest overdue forecast reported",
+       ov is not None and 3000 < ov < 4000, ov)
+
+
+def c035_two_forecasters_are_scored_on_the_same_items():
+    from attest.decisions import now_iso
+    from attest.forecast import BaseRate, Constant, Item, record_forecasts
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    hist = {"t0": [True] * 10, "t1": [False] * 10}
+    items = [Item("t0", "q?"), Item("t1", "q?")]
+    rec = record_forecasts(ledger, items, [Constant(0.5), BaseRate(hist)],
+                           cohort="x1", due_at=now_iso(600))
+    ok("C035 every forecaster answers every item", rec["recorded"] == 4, rec)
+    rows = ledger.pending()
+    ok("C035b and they share one cohort and one due time, so they are compared on "
+       "the same question rather than on adjacent ones",
+       len({r["cohort"] for r in rows}) == 1 and len({r["due_at"] for r in rows}) == 1,
+       [(r["cohort"], r["due_at"]) for r in rows])
+    ok("C035c the base rate is smoothed, so ten out of ten does not buy a claim "
+       "of certainty",
+       all(r["probability"] < 1.0 for r in rows if r["model"] == "base-rate"),
+       [r["probability"] for r in rows if r["model"] == "base-rate"])
+
+
+def c036_an_open_forecast_is_not_a_correct_one():
+    from attest.decisions import now_iso
+    from attest.forecast import Constant, Item, record_forecasts
+    svc, d = tmp_service()
+    ledger = svc.decisions
+    items = [Item("t%d" % i, "q?") for i in range(40)]
+    record_forecasts(ledger, items, [Constant(0.95)], cohort="o1",
+                     due_at=now_iso(3600))
+    cal = ledger.calibration(model="constant-0.95")
+    ok("C036 forty forecasts still waiting are reported unresolved, not as forty "
+       "correct", cal["resolved"] == 0 and cal["unresolved"] == 40, cal)
+    ok("C036b and no rate is claimed from them",
+       "INSUFFICIENT DATA" in cal["verdict"], cal["verdict"])
+    dis = ledger.discriminability(model="constant-0.95")
+    ok("C036c and discriminability declines to judge before the outcomes exist",
+       dis["can_demonstrate_skill"] is None, dis)
+
+
 CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c002_anti_blindness_timeout_is_unknown,
             c003_a_real_failure_is_disputed,
@@ -436,7 +667,18 @@ CONTROLS = [c001_a_bare_bool_cannot_carry_unknown,
             c022_an_unknown_outcome_stays_unresolved,
             c023_overconfidence_is_detected_and_only_then,
             c024_a_well_calibrated_bucket_is_not_called_overconfident,
-            c025_wilson_brackets_the_estimate]
+            c025_wilson_brackets_the_estimate,
+            c026_a_forecast_must_be_about_the_future,
+            c027_only_forecasts_come_due,
+            c028_an_unresolvable_forecast_stays_open,
+            c029_the_ledger_can_still_catch_a_bad_forecaster,
+            c030_a_population_that_cannot_show_skill_is_named_as_such,
+            c031_a_worse_than_base_rate_forecaster_scores_negative,
+            c032_ranking_refuses_when_the_population_cannot_support_it,
+            c033_many_samples_in_one_cohort_are_not_many_observations,
+            c034_a_forecast_nobody_settled_is_a_broken_resolver,
+            c035_two_forecasters_are_scored_on_the_same_items,
+            c036_an_open_forecast_is_not_a_correct_one]
 
 
 def main():

@@ -1,0 +1,38 @@
+name: ci
+
+# Nothing ran these suites automatically, and that is how one conformance control
+# came to assert 'the five operations are exposed as MCP tools' and stay wrong
+# while there were eleven of them. A control nobody executes is not a control.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  suites:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The MCP extra is installed on purpose. Without it those two suites report
+      # UNMEASURED and exit 2, which is honest but leaves a hole in the coverage.
+      - name: install with the MCP extra so nothing is skipped
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[mcp]'
+
+      - name: every suite, three-valued
+        run: python tests/run_all.py
+
+# Exit 0 means every suite ran and passed. 1 means one failed. 2 means one could
+# not be measured - deliberately not success, because a run that could not check
+# everything has not established that everything holds.

@@ -22,7 +22,7 @@ from .decisions import DecisionLedger
 from .store import Store, TIER_ASSERTED, TIER_VERIFIED
 from .verdict import Verdict
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # MEASURED on the machine this came from: capabilities() took 122 SECONDS,
 # because it runs real probes, including compiling against Lean. That is the

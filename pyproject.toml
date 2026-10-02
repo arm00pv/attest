@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "attest-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Verifiable memory and claim-checking for any AI. A verdict here comes from a checker, not a model."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -148,9 +148,16 @@ def exercise(transport):
             check("T[%s] a real client connected" % transport, False, last)
             return
 
-        check("T[%s] all five tools are exposed over the wire" % transport,
-              result["names"] == ["capabilities", "memcheck", "recall",
-                                  "remember", "verify"], result["names"])
+        # Derived from the manifest, not hardcoded. This said "five" long after
+        # there were more, and it stayed wrong because these transports only run
+        # when the MCP SDK is installed, which it is not by default.
+        import tempfile as _tf
+        from attest import Service as _Svc
+        _svc = _Svc(os.path.join(_tf.mkdtemp(prefix="attest_tr_"), "m.db"))
+        expected = sorted(o["name"] for o in _svc.manifest()["operations"])
+        check("T[%s] every manifest operation is exposed over the wire" % transport,
+              result["names"] == expected,
+              {"wire": result["names"], "manifest": expected})
         check("T[%s] capabilities returns a MEASURED result" % transport,
               result["caps"].get("measured") is True
               and result["caps"].get("ok") is True, list(result["caps"])[:8])

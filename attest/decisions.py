@@ -280,8 +280,8 @@ class DecisionLedger:
             where += " AND stratum = ?"
             args.append(stratum)
         rows = self.db.execute(
-            "SELECT probability, correct, stratum, cohort FROM decisions WHERE "
-            + where, tuple(args)).fetchall()
+            "SELECT probability, correct, stratum, cohort, at, due_at, resolved_at"
+            " FROM decisions WHERE " + where, tuple(args)).fetchall()
 
         # "Unresolved" is three different situations and collapsing them hides
         # the only one that is a fault. An outcome that is not knowable yet is
@@ -406,6 +406,29 @@ class DecisionLedger:
         # fifteen minutes does not buy fifteen minutes' worth of independent
         # evidence, and an interval computed as if it did is optimistic in a way
         # nobody can see from the number itself.
+        # THE HORIZON THAT ACTUALLY HAPPENED. A stratum called "panel15m" should be
+        # able to prove its own cadence rather than have it assumed from its name.
+        # A forecast due at +14m but settled at the next run four hours later is a
+        # four-hour measurement wearing a fourteen-minute label, and nothing else
+        # in this table would reveal that.
+        elapsed = []
+        for r in rows:
+            if not (r["at"] and r["resolved_at"]):
+                continue
+            try:
+                elapsed.append(_iso_to_epoch(r["resolved_at"]) - _iso_to_epoch(r["at"]))
+            except Exception:
+                continue
+        horizon = None
+        if elapsed:
+            elapsed.sort()
+            mid = len(elapsed) // 2
+            median = (elapsed[mid] if len(elapsed) % 2
+                      else (elapsed[mid - 1] + elapsed[mid]) / 2.0)
+            horizon = {"n": len(elapsed), "min_s": round(elapsed[0], 1),
+                       "median_s": round(median, 1), "max_s": round(elapsed[-1], 1),
+                       "mean_s": round(sum(elapsed) / len(elapsed), 1)}
+
         cohorts = len({(r["cohort"] or "") for r in rows if r["cohort"]})
         per_cohort = (round(resolved / cohorts, 1) if cohorts else None)
         independence = None
@@ -419,7 +442,7 @@ class DecisionLedger:
         return {"ok": True, "model": model or "(all)", "stratum": stratum or "(all)",
                 "recorded": total, "resolved": resolved, "unresolved": unresolved,
                 "cohorts": cohorts, "per_cohort": per_cohort,
-                "independence_warning": independence,
+                "independence_warning": independence, "actual_horizon": horizon,
                 "open": {"awaiting_outcome": awaiting, "due_just_now": just_due,
                          "due_but_unrecorded": missed_due,
                          "never_a_forecast": never_forecast,

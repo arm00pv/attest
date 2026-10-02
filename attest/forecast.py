@@ -167,6 +167,15 @@ def record_forecasts(ledger, items: Sequence[Item], forecasters: Sequence[Foreca
     reboots takes every target on it down together - so a cohort is closer to
     one observation than to len(items) of them. That is recorded so it can be
     said out loud later rather than discovered by someone re-reading the code.
+
+    SET due_at SHORTER THAN THE CADENCE, NOT EQUAL TO IT. A forecast due exactly
+    one interval from now can miss its own settlement: timestamps are whole
+    seconds, so if the next run happens to start a few seconds earlier in its
+    second than this one did, due_at is still in the future when it is checked
+    and the decision waits a whole extra cycle. At a fifteen-minute cadence that
+    hides four observations an hour; at a daily cadence it costs an entire day.
+    Leave slack - fourteen minutes for a fifteen-minute timer, twenty-three and
+    a half hours for a daily one - and the next run always clears it.
     """
     written, refused = [], []
     for item in items:

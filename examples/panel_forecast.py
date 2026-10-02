@@ -324,7 +324,10 @@ def main() -> int:
     ap.add_argument("--history", default=os.path.join(
         os.path.expanduser("~"), ".omni_brain", "panel_history.json"))
     ap.add_argument("--minutes", type=int, default=15,
-                    help="horizon of each forecast, matching the timer interval")
+                    help="horizon of each forecast. Set this SHORTER than the timer "
+                         "interval, not equal to it: a forecast due exactly one "
+                         "interval ahead can miss its own settlement by a few seconds "
+                         "of scheduling jitter and wait a whole extra cycle.")
     ap.add_argument("--stratum", default="panel",
                     help="names this cadence, so horizons are never pooled")
     ap.add_argument("--who", default="panel-forecast")

@@ -36,6 +36,29 @@ mkdir -p "$(dirname "$LOCK")" "$BASE/.omni_brain"
 shout() {   # shout <rc> <message...>
   local rc=$1; shift
   local msg="$*"
+  # AN EMPTY REPORT IS NOT AN ABSENCE OF A PROBLEM.
+  #
+  # estate_notify.py REFUSES to send an empty message: it prints "nothing to say -
+  # no notification sent" and exits 0. This function passed the job's last twenty
+  # output lines straight through, so a job that failed with NO OUTPUT NOTIFIED
+  # NOBODY.
+  #
+  # That is exactly what a timeout looks like. timeout(1) SIGTERMs the job, the job
+  # prints nothing on its way out, rc=124 reaches here with an empty body, and the
+  # alert stops at the log file. Measured on throne 2026-10-03: fleet_model failed
+  # rc=124 every hour from 20:55 and every entry in its anomaly log reads "nothing
+  # to say - no notification sent", while fleet_coverage - which always has text to
+  # send - was the only job that reached a human.
+  #
+  # The commonest failure mode was the quietest one. A finding with no evidence is
+  # still a finding; the report just has to say which it is.
+  if [ -z "$msg" ]; then
+    msg="the job produced NO OUTPUT and exited $rc.
+
+An empty report is not the same as no problem. This is what a timeout (rc=124) looks
+like: the job was killed before it could say anything, and nothing it did or did not
+print is evidence either way. Check $LOG and the lock file."
+  fi
   if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt 1048576 ]; then mv -f "$LOG" "$LOG.1"; fi
   { echo "=== $(date -Is) rc=$rc ==="; echo "$msg"; } >> "$LOG"
   printf '%s\n' "$msg" | \
